@@ -27,7 +27,7 @@ import type {ContactFormFacade} from "./facades/ContactFormFacade"
 import {ContactFormFacadeImpl} from "./facades/ContactFormFacade"
 import type {DeviceEncryptionFacade} from "./facades/DeviceEncryptionFacade"
 import {Aes256DeviceEncryptionFacade} from "./facades/DeviceEncryptionFacade"
-import type {NativeInterface} from "../../native/common/NativeInterface"
+import type {ExposedNativeInterface, NativeInterface} from "../../native/common/NativeInterface"
 import {NativeFileApp} from "../../native/common/FileApp"
 import {AesApp} from "../../native/worker/AesApp"
 import type {RsaImplementation} from "./crypto/RsaImplementation"
@@ -47,6 +47,7 @@ import {uint8ArrayToKey} from "@tutao/tutanota-crypto"
 import {IServiceExecutor} from "../common/ServiceRequest"
 import {ServiceExecutor} from "./rest/ServiceExecutor"
 import {BookingFacade} from "./facades/BookingFacade"
+import {OfflineDbFacade} from "../../desktop/db/OfflineDbFacade"
 
 assertWorkerOrNode()
 
@@ -202,7 +203,7 @@ function makeCacheStorage(): LateInitializedCacheStorage {
 	if (isOfflineStorageAvailable()) {
 		return new LateInitializedCacheStorageImpl(async (args) => {
 			if (args.persistent) {
-				const {offlineDbFacade} = exposeRemote((request) => locator.native.invokeNative(request))
+				const {offlineDbFacade} = exposeRemote<ExposedNativeInterface>((request) => locator.native.invokeNative(request))
 				const offlineStorage = new OfflineStorage(offlineDbFacade)
 				await offlineStorage.init(args.userId, uint8ArrayToKey(args.databaseKey))
 				return offlineStorage

@@ -74,7 +74,7 @@ export class IPC {
 		alarmScheduler: DesktopAlarmScheduler,
 		themeManager: ThemeManager,
 		credentialsEncryption: DektopCredentialsEncryption,
-		private readonly exposedInterfaceFactory: (windowId: number) => ExposedNativeInterface,
+		private readonly exposedInterfaceFactory: (windowId: number, ipc: IPC) => ExposedNativeInterface,
 	) {
 		this._conf = conf
 		this._sse = sse
@@ -434,7 +434,7 @@ export class IPC {
 	}
 
 	private getHandlerForWindow(windowId: number): FacadeHandler {
-		return getFromMap(this.facadeHandlerPerWindow, windowId, () => exposeLocal(this.exposedInterfaceFactory(windowId)))
+		return getFromMap(this.facadeHandlerPerWindow, windowId, () => exposeLocal(this.exposedInterfaceFactory(windowId, this)))
 	}
 
 	async _applyTheme(newThemeId: ThemeId) {
