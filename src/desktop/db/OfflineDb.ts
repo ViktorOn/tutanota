@@ -235,9 +235,9 @@ export class OfflineDb {
 	}
 
 	async getMetadata<K extends keyof OfflineDbMeta>(key: K): Promise<Uint8Array | null> {
-		const value = this.db.prepare("SELECT value from metadata WHERE key = :key ")
-						  .get({key})?.value ?? null
-		return new Uint8Array(value.buffer)
+		const value: Buffer | null = this.db.prepare("SELECT value from metadata WHERE key = :key ")
+										 .get({key})?.value ?? null
+		return value == null ? null : new Uint8Array(value.buffer)
 	}
 
 	async putMetadata<K extends keyof OfflineDbMeta>(key: K, value: Uint8Array): Promise<void> {

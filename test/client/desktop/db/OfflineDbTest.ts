@@ -297,12 +297,18 @@ o.spec("OfflineDb ", function () {
 			o(await db.getLastBatchIdForGroup(groupId)).equals(newBatchId)
 		})
 	})
-	o("put and get Metadata", async function () {
-		const time = new Date().getTime()
-		const encodedDate = cborg.encode(time)
-		await db.putMetadata("lastUpdateTime", encodedDate)
-		const receivedEntity = await db.getMetadata("lastUpdateTime")
-		o(cborg.decode(assertNotNull(receivedEntity))).equals(time)
+	o.spec("metadata", function() {
+		o("put and get", async function () {
+			const time = new Date().getTime()
+			const encodedDate = cborg.encode(time)
+			await db.putMetadata("lastUpdateTime", encodedDate)
+			const receivedEntity = await db.getMetadata("lastUpdateTime")
+			o(cborg.decode(assertNotNull(receivedEntity))).equals(time)
+		})
+		o("check for null", async function () {
+			const receivedEntity = await db.getMetadata("lastUpdateTime")
+			o(receivedEntity).equals(null)
+		})
 	})
 	o.spec("Test encryption", function () {
 		const time = new Date().getTime()
