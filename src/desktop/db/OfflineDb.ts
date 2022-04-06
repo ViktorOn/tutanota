@@ -45,17 +45,10 @@ export interface PersistedEntity {
 	--------------------------------
 	| -----------a | -----------b |
 
-	Two options:
-		TABLE metadata
-		| lastUpdateTime   | id (0) |
-		|------------------|--------|
-		| 1234567890       | 0      |
-		|---------------------------|
-
-		TABLE metadata						<---- We use the second one for now
-		| key (PRIMARY KEY) | value     |
-		|-------------------|-----------|
-		| lastUpdateTime    | some date |
+	| key (PRIMARY KEY) | value     |
+	|-------------------|-----------|
+	| lastUpdateTime    | some date |
+	| tutanotaVersion   | 51        |
  */
 
 /**
