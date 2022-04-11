@@ -419,7 +419,7 @@ export class LoginFacadeImpl implements LoginFacade {
 	/**
 	 * Resume a session of stored credentials.
 	 */
-	resumeSession(
+	async resumeSession(
 		credentials: Credentials,
 		externalUserSalt: Uint8Array | null,
 		databaseKey: Uint8Array | null
@@ -428,26 +428,22 @@ export class LoginFacadeImpl implements LoginFacade {
 		userGroupInfo: GroupInfo
 		sessionId: IdTuple
 	}> {
-		return this._loadSessionData(credentials.accessToken).then(sessionData => {
-			let passphrase = utf8Uint8ArrayToString(aes128Decrypt(sessionData.accessKey, base64ToUint8Array(neverNull(credentials.encryptedPassword))))
-			let passphraseKeyPromise: Promise<Aes128Key>
+		const sessionData = await this._loadSessionData(credentials.accessToken)
+		let passphrase = utf8Uint8ArrayToString(aes128Decrypt(sessionData.accessKey, base64ToUint8Array(neverNull(credentials.encryptedPassword))))
+		let userPassphraseKey: Aes128Key
 
-			if (externalUserSalt) {
-				passphraseKeyPromise = Promise.resolve(generateKeyFromPassphrase(passphrase, externalUserSalt, KeyLength.b128))
-			} else {
-				passphraseKeyPromise = this._loadUserPassphraseKey(credentials.login, passphrase)
-			}
+		if (externalUserSalt) {
+			userPassphraseKey = generateKeyFromPassphrase(passphrase, externalUserSalt, KeyLength.b128)
+		} else {
+			userPassphraseKey = await this._loadUserPassphraseKey(credentials.login, passphrase)
+		}
 
-			return passphraseKeyPromise.then(userPassphraseKey => {
-				return this.initSession(sessionData.userId, credentials.accessToken, userPassphraseKey, SessionType.Persistent, databaseKey).then(() => {
-					return {
-						user: neverNull(this._user),
-						userGroupInfo: neverNull(this._userGroupInfo),
-						sessionId: [this._getSessionListId(credentials.accessToken), this._getSessionElementId(credentials.accessToken)],
-					}
-				})
-			})
-		})
+		await this.initSession(sessionData.userId, credentials.accessToken, userPassphraseKey, SessionType.Persistent, databaseKey)
+		return {
+			user: neverNull(this._user),
+			userGroupInfo: neverNull(this._userGroupInfo),
+			sessionId: [this._getSessionListId(credentials.accessToken), this._getSessionElementId(credentials.accessToken)],
+		}
 	}
 
 	private async initSession(
