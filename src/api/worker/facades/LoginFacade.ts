@@ -215,6 +215,7 @@ export class LoginFacadeImpl implements LoginFacade {
 		 */
 		private readonly initializeCacheStorage: LateInitializedCacheStorage["initialize"],
 		private readonly serviceExecutor: IServiceExecutor,
+		private readonly offlineStorageEnabledProvider: () => Promise<boolean>,
 	) {
 		this.initializeMembers()
 	}
@@ -464,7 +465,7 @@ export class LoginFacadeImpl implements LoginFacade {
 
 		this._accessToken = accessToken
 
-		const usingOfflineStorage = databaseKey != null
+		const usingOfflineStorage = databaseKey != null && await this.offlineStorageEnabledProvider()
 
 		try {
 			if (usingOfflineStorage) {
@@ -908,7 +909,7 @@ export class LoginFacadeImpl implements LoginFacade {
 							   const extraHeaders = {
 								   accessToken: sessionData.accessToken,
 							   }
-						return this.serviceExecutor.post(ChangePasswordService, postData, {extraHeaders})
+							   return this.serviceExecutor.post(ChangePasswordService, postData, {extraHeaders})
 						   })
 						   .finally(() => this.deleteSession(sessionData.accessToken))
 				   })

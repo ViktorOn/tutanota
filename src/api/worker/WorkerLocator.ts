@@ -47,7 +47,8 @@ import {uint8ArrayToKey} from "@tutao/tutanota-crypto"
 import {IServiceExecutor} from "../common/ServiceRequest"
 import {ServiceExecutor} from "./rest/ServiceExecutor"
 import {BookingFacade} from "./facades/BookingFacade"
-import {OfflineDbFacade} from "../../desktop/db/OfflineDbFacade"
+import {NativeSystemApp} from "../../native/common/NativeSystemApp"
+import {DesktopConfigKey} from "../../desktop/config/ConfigKeys"
 
 assertWorkerOrNode()
 
@@ -115,6 +116,10 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 	locator.indexer = new Indexer(entityRestClient, worker, browserData, locator.cache as EntityRestCache)
 	const mainInterface = worker.getMainInterface()
 	locator.secondFactorAuthenticationHandler = mainInterface.secondFactorAuthenticationHandler
+
+	const fileApp = new NativeFileApp(worker)
+	const systemApp = new NativeSystemApp(worker, fileApp)
+
 	locator.login = new LoginFacadeImpl(
 		worker,
 		locator.restClient,
@@ -127,6 +132,7 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 		() => locator.crypto,
 		uninitializedStorage.initialize.bind(uninitializedStorage),
 		locator.serviceExecutor,
+		async () => isDesktop() && await systemApp.getConfigValue(DesktopConfigKey.offlineStorage),
 	)
 	locator.crypto = new CryptoFacadeImpl(locator.login, locator.cachingEntityClient, locator.restClient, locator.rsa, locator.serviceExecutor)
 	const suggestionFacades = [
@@ -157,7 +163,6 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 		locator.serviceExecutor,
 		locator.booking,
 	)
-	const fileApp = new NativeFileApp(worker)
 	const aesApp = new AesApp(worker)
 	locator.file = new FileFacade(locator.login, locator.restClient, suspensionHandler, fileApp, aesApp, locator.instanceMapper, locator.serviceExecutor)
 	locator.mail = new MailFacade(locator.login, locator.file, locator.cachingEntityClient, locator.crypto, locator.serviceExecutor)
