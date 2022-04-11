@@ -277,7 +277,8 @@ export class LoginFacadeImpl implements LoginFacade {
 		const createSessionReturn = await this.serviceExecutor.post(SessionService, createSessionData)
 		const sessionData = await this._waitUntilSecondFactorApprovedOrCancelled(createSessionReturn, mailAddress)
 
-		await this.initSession(sessionData.userId, sessionData.accessToken, userPassphraseKey, sessionType, databaseKey)
+		await this.initCache(sessionData.userId, databaseKey)
+		await this.initSession(sessionData.userId, sessionData.accessToken, userPassphraseKey, sessionType)
 
 		return {
 			user: neverNull(this._user),
@@ -376,7 +377,8 @@ export class LoginFacadeImpl implements LoginFacade {
 
 
 		let sessionId = [this._getSessionListId(createSessionReturn.accessToken), this._getSessionElementId(createSessionReturn.accessToken)] as const
-		await this.initSession(createSessionReturn.user, createSessionReturn.accessToken, userPassphraseKey, SessionType.Login, null)
+		await this.initCache(userId, null)
+		await this.initSession(createSessionReturn.user, createSessionReturn.accessToken, userPassphraseKey, SessionType.Login)
 		const userGroupInfo = neverNull(this._userGroupInfo)
 		return {
 			user: assertNotNull<User>(this._user),
@@ -416,6 +418,10 @@ export class LoginFacadeImpl implements LoginFacade {
 		await this.serviceExecutor.post(SecondFactorAuthService, data)
 	}
 
+	// option 1: we call resumeSession. it sets user and does the rest async. If login fails, it sends a message to the client side.
+	// option 2: we call "useUser or smh", it sets users. Then we call resumeSession but we don't ?block? on it. If it fails, we catch it.
+
+
 	/**
 	 * Resume a session of stored credentials.
 	 */
@@ -428,21 +434,39 @@ export class LoginFacadeImpl implements LoginFacade {
 		userGroupInfo: GroupInfo
 		sessionId: IdTuple
 	}> {
-		const sessionData = await this._loadSessionData(credentials.accessToken)
-		let passphrase = utf8Uint8ArrayToString(aes128Decrypt(sessionData.accessKey, base64ToUint8Array(neverNull(credentials.encryptedPassword))))
-		let userPassphraseKey: Aes128Key
+		const usingOfflineStorage = await this.initCache(credentials.userId, databaseKey)
+		const sessionId: IdTuple = [this._getSessionListId(credentials.accessToken), this._getSessionElementId(credentials.accessToken)]
 
-		if (externalUserSalt) {
-			userPassphraseKey = generateKeyFromPassphrase(passphrase, externalUserSalt, KeyLength.b128)
-		} else {
-			userPassphraseKey = await this._loadUserPassphraseKey(credentials.login, passphrase)
+		const doSomeBodingStuff = async () => {
+			const sessionData = await this._loadSessionData(credentials.accessToken)
+			let passphrase = utf8Uint8ArrayToString(aes128Decrypt(sessionData.accessKey, base64ToUint8Array(neverNull(credentials.encryptedPassword))))
+			let userPassphraseKey: Aes128Key
+
+			if (externalUserSalt) {
+				userPassphraseKey = generateKeyFromPassphrase(passphrase, externalUserSalt, KeyLength.b128)
+			} else {
+				userPassphraseKey = await this._loadUserPassphraseKey(credentials.login, passphrase)
+			}
+
+			await this.initSession(sessionData.userId, credentials.accessToken, userPassphraseKey, SessionType.Persistent)
+			return {
+				user: neverNull(this._user),
+				userGroupInfo: neverNull(this._userGroupInfo),
+				sessionId: sessionId,
+			}
 		}
 
-		await this.initSession(sessionData.userId, credentials.accessToken, userPassphraseKey, SessionType.Persistent, databaseKey)
-		return {
-			user: neverNull(this._user),
-			userGroupInfo: neverNull(this._userGroupInfo),
-			sessionId: [this._getSessionListId(credentials.accessToken), this._getSessionElementId(credentials.accessToken)],
+		if (usingOfflineStorage) {
+			const user = await this.entityClient.load(UserTypeRef, credentials.userId)
+			// Do not wait for it
+			doSomeBodingStuff()
+			return {
+				user,
+				userGroupInfo: await this.entityClient.load(GroupInfoTypeRef, user.userGroup.groupInfo),
+				sessionId,
+			}
+		} else {
+			return doSomeBodingStuff()
 		}
 	}
 
@@ -450,8 +474,7 @@ export class LoginFacadeImpl implements LoginFacade {
 		userId: Id,
 		accessToken: Base64Url,
 		userPassphraseKey: Aes128Key,
-		sessionType: SessionType,
-		databaseKey: Uint8Array | null
+		sessionType: SessionType
 	): Promise<void> {
 		let userIdFromFormerLogin = this._user ? this._user._id : null
 
@@ -461,26 +484,7 @@ export class LoginFacadeImpl implements LoginFacade {
 
 		this._accessToken = accessToken
 
-		const usingOfflineStorage = databaseKey != null && await this.offlineStorageEnabledProvider()
-
 		try {
-			if (usingOfflineStorage) {
-				try {
-					await this.initializeCacheStorage({
-						persistent: true,
-						userId,
-						databaseKey
-					})
-				} catch (e) {
-					// Precaution in case something bad happens to offline database. We want users to still be able to log in.
-					console.error("Error while initializing offline cache storage", e)
-					this.worker.sendError(e)
-					await this.initializeCacheStorage({persistent: false})
-				}
-			} else {
-				await this.initializeCacheStorage({persistent: false})
-			}
-
 			const user = await this.entityClient.load(UserTypeRef, userId)
 			// we check that the password is not changed
 			// this may happen when trying to resume a session with an old stored password for externals when the password was changed by the sender
@@ -501,7 +505,8 @@ export class LoginFacadeImpl implements LoginFacade {
 				// index new items in background
 				console.log("_initIndexer after log in")
 
-				this._initIndexer(usingOfflineStorage)
+				// FIXME
+				// this._initIndexer(usingOfflineStorage)
 			}
 
 			await this.loadEntropy()
@@ -519,6 +524,27 @@ export class LoginFacadeImpl implements LoginFacade {
 			this.resetSession()
 			throw e
 		}
+	}
+
+	private async initCache(userId: string, databaseKey: Uint8Array | null): Promise<boolean> {
+		const usingOfflineStorage = databaseKey != null && await this.offlineStorageEnabledProvider()
+		if (usingOfflineStorage) {
+			try {
+				await this.initializeCacheStorage({
+					persistent: true,
+					userId,
+					databaseKey
+				})
+			} catch (e) {
+				// Precaution in case something bad happens to offline database. We want users to still be able to log in.
+				console.error("Error while initializing offline cache storage", e)
+				this.worker.sendError(e)
+				await this.initializeCacheStorage({persistent: false})
+			}
+		} else {
+			await this.initializeCacheStorage({persistent: false})
+		}
+		return usingOfflineStorage
 	}
 
 	_initIndexer(isUsingOfflineCache: boolean): Promise<void> {
