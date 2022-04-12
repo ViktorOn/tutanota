@@ -1,6 +1,5 @@
 import o from "ospec"
 import {MailFacade, phishingMarkerValue} from "../../../../src/api/worker/facades/MailFacade"
-import {downcast} from "@tutao/tutanota-utils"
 import {createMail} from "../../../../src/api/entities/tutanota/Mail"
 import {createMailAddress} from "../../../../src/api/entities/tutanota/MailAddress"
 import {MailAuthenticationStatus, ReportedMailFieldType} from "../../../../src/api/common/TutanotaConstants"
@@ -8,25 +7,25 @@ import {createPhishingMarker} from "../../../../src/api/entities/tutanota/Phishi
 import {object} from "testdouble"
 import {CryptoFacade} from "../../../../src/api/worker/crypto/CryptoFacade"
 import {IServiceExecutor} from "../../../../src/api/common/ServiceRequest"
-import {LoginFacade, LoginFacadeImpl} from "../../../../src/api/worker/facades/LoginFacade"
 import {FileFacade} from "../../../../src/api/worker/facades/FileFacade"
 import {EntityClient} from "../../../../src/api/common/EntityClient"
+import {UserFacade} from "../../../../src/api/worker/facades/UserFacade"
 
 o.spec("MailFacade test", function () {
 	let facade: MailFacade
-	let loginFacade: LoginFacadeImpl
+	let userFacade: UserFacade
 	let cryptoFacade: CryptoFacade
 	let serviceExecutor: IServiceExecutor
 	let fileFacade: FileFacade
 	let entity: EntityClient
 
 	o.beforeEach(function () {
-		loginFacade = object()
+		userFacade = object()
 		fileFacade = object()
 		entity = object()
 		cryptoFacade = object()
 		serviceExecutor = object()
-		facade = new MailFacade(loginFacade, fileFacade, entity, cryptoFacade, serviceExecutor)
+		facade = new MailFacade(userFacade, fileFacade, entity, cryptoFacade, serviceExecutor)
 	})
 
 	o.spec("checkMailForPhishing", function () {
