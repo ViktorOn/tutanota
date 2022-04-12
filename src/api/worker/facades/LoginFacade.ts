@@ -10,13 +10,10 @@ import {
 	delay,
 	hexToUint8Array,
 	isSameTypeRefByAttr,
-	lazy,
 	neverNull,
 	noOp,
 	ofClass,
-	promiseMap,
 	uint8ArrayToBase64,
-	uint8ArrayToHex,
 	utf8Uint8ArrayToString,
 } from "@tutao/tutanota-utils"
 import {
@@ -29,7 +26,7 @@ import {
 	SessionService,
 	TakeOverDeletedAddressService
 } from "../../entities/sys/Services"
-import {CloseEventBusOption, GroupType, OperationType} from "../../common/TutanotaConstants"
+import {CloseEventBusOption, OperationType} from "../../common/TutanotaConstants"
 import {CryptoError} from "../../common/error/CryptoError"
 import {createSaltData} from "../../entities/sys/SaltData"
 import type {SaltReturn} from "../../entities/sys/SaltReturn"
@@ -53,15 +50,12 @@ import type {Indexer} from "../search/Indexer"
 import {createDeleteCustomerData} from "../../entities/sys/DeleteCustomerData"
 import {createAutoLoginDataGet} from "../../entities/sys/AutoLoginDataGet"
 import {CancelledError} from "../../common/error/CancelledError"
-import {createRecoverCode, RecoverCodeTypeRef} from "../../entities/sys/RecoverCode"
+import {RecoverCodeTypeRef} from "../../entities/sys/RecoverCode"
 import {createResetFactorsDeleteData} from "../../entities/sys/ResetFactorsDeleteData"
-import type {GroupMembership} from "../../entities/sys/GroupMembership"
 import type {EntityUpdate} from "../../entities/sys/EntityUpdate"
 import {RestClient} from "../rest/RestClient"
 import {EntityClient} from "../../common/EntityClient"
 import {createTakeOverDeletedAddressData} from "../../entities/sys/TakeOverDeletedAddressData"
-import type {WebsocketLeaderStatus} from "../../entities/sys/WebsocketLeaderStatus"
-import {createWebsocketLeaderStatus} from "../../entities/sys/WebsocketLeaderStatus"
 import {createEntropyData} from "../../entities/tutanota/EntropyData"
 import {GENERATED_ID_BYTES_LENGTH, isSameId} from "../../common/utils/EntityUtils"
 import type {Credentials} from "../../../misc/credentials/Credentials"
@@ -69,15 +63,9 @@ import {
 	aes128Decrypt,
 	aes128RandomKey,
 	aes256DecryptKey,
-	aes256EncryptKey,
-	aes256RandomKey,
 	base64ToKey,
-	bitArrayToUint8Array,
 	createAuthVerifier,
 	createAuthVerifierAsBase64Url,
-	decrypt256Key,
-	decryptKey,
-	encrypt256Key,
 	encryptKey,
 	generateKeyFromPassphrase,
 	generateRandomSalt,
@@ -100,6 +88,7 @@ import {EntropyService} from "../../entities/tutanota/Services"
 import {IServiceExecutor} from "../../common/ServiceRequest"
 import {SessionType} from "../../common/SessionType"
 import {LateInitializedCacheStorage} from "../rest/CacheStorageProxy"
+import {AuthHeadersProvider, UserFacade} from "./UserFacade"
 
 assertWorkerOrNode()
 const RETRY_TIMOUT_AFTER_INIT_INDEXER_ERROR_MS = 30000
@@ -108,6 +97,12 @@ export type NewSessionData = {
 	userGroupInfo: GroupInfo
 	sessionId: IdTuple
 	credentials: Credentials
+}
+
+export enum LoggedInState {
+	notLoggedIn,
+	offlineLoggedIn,
+	loggedIn,
 }
 
 export interface LoginFacade {
@@ -153,10 +148,6 @@ export interface LoginFacade {
 
 	generateTotpCode(time: number, key: Uint8Array): Promise<number>
 
-	getRecoverCode(password: string): Promise<string>
-
-	createRecoveryCode(password: string): Promise<string>
-
 	deleteAccount(password: string, reason: string, takeover: string): Promise<void>
 
 	/** Cancels 2FA process. */
@@ -179,10 +170,6 @@ export interface LoginFacade {
 }
 
 export class LoginFacadeImpl implements LoginFacade {
-	_user: User | null = null
-	private _userGroupInfo: GroupInfo | null = null
-	private _accessToken: string | null = null
-	private groupKeys!: Record<Id, Aes128Key>
 	private _eventBusClient!: EventBusClient
 	private _indexer!: Indexer
 	/**
@@ -198,16 +185,13 @@ export class LoginFacadeImpl implements LoginFacade {
 		| null
 		| undefined
 
-	// needed here for entropy updates, init as non-leader
-	private _leaderStatus!: WebsocketLeaderStatus
-
 	constructor(
 		readonly worker: WorkerImpl,
 		private readonly restClient: RestClient,
 		private readonly entityClient: EntityClient,
 		private readonly secondFactorAuthHandler: SecondFactorAuthHandler,
 		private readonly instanceMapper: InstanceMapper,
-		private readonly cryptoFacade: lazy<CryptoFacade>,
+		private readonly cryptoFacade: CryptoFacade,
 		/**
 		 *  Only needed so that we can initialize the offline storage after login.
 		 *  This is necessary because we don't know if we'll be persistent or not until the user tries to login
@@ -216,19 +200,9 @@ export class LoginFacadeImpl implements LoginFacade {
 		private readonly initializeCacheStorage: LateInitializedCacheStorage["initialize"],
 		private readonly serviceExecutor: IServiceExecutor,
 		private readonly offlineStorageEnabledProvider: () => Promise<boolean>,
+		private readonly userFacade: UserFacade,
 	) {
-		this.initializeMembers()
-	}
 
-
-	private initializeMembers() {
-		this._user = null
-		this._userGroupInfo = null
-		this._accessToken = null
-		this.groupKeys = {}
-		this._leaderStatus = createWebsocketLeaderStatus({
-			leaderStatus: false,
-		})
 	}
 
 	init(indexer: Indexer, eventBusClient: EventBusClient) {
@@ -238,12 +212,8 @@ export class LoginFacadeImpl implements LoginFacade {
 
 
 	async resetSession(): Promise<void> {
-
-		this.initializeMembers()
-
-		if (this._eventBusClient) {
-			this._eventBusClient.close(CloseEventBusOption.Terminate)
-		}
+		this._eventBusClient.close(CloseEventBusOption.Terminate)
+		this.userFacade.reset()
 	}
 
 	/** @inheritDoc */
@@ -254,7 +224,7 @@ export class LoginFacadeImpl implements LoginFacade {
 		sessionType: SessionType,
 		databaseKey: Uint8Array | null,
 	): Promise<NewSessionData> {
-		if (this._user) {
+		if (this.userFacade.isLoggedIn()) {
 			console.log("session already exists, reuse data") // do not reset here because the event bus client needs to be kept if the same user is logged in as before
 			// check if it is the same user in _initSession()
 		}
@@ -278,15 +248,15 @@ export class LoginFacadeImpl implements LoginFacade {
 		const sessionData = await this._waitUntilSecondFactorApprovedOrCancelled(createSessionReturn, mailAddress)
 
 		await this.initCache(sessionData.userId, databaseKey)
-		await this.initSession(sessionData.userId, sessionData.accessToken, userPassphraseKey, sessionType)
+		const {user, userGroupInfo, accessToken} = await this.initSession(sessionData.userId, sessionData.accessToken, userPassphraseKey, sessionType)
 
 		return {
-			user: neverNull(this._user),
-			userGroupInfo: neverNull(this._userGroupInfo),
+			user,
+			userGroupInfo,
 			sessionId: sessionData.sessionId,
 			credentials: {
 				login: mailAddress,
-				accessToken: neverNull(this._accessToken),
+				accessToken,
 				encryptedPassword: sessionType === SessionType.Persistent ? uint8ArrayToBase64(encryptString(neverNull(accessKey), passphrase)) : null,
 				userId: sessionData.userId,
 				type: "internal",
@@ -352,7 +322,7 @@ export class LoginFacadeImpl implements LoginFacade {
 
 	/** @inheritDoc */
 	async createExternalSession(userId: Id, passphrase: string, salt: Uint8Array, clientIdentifier: string, persistentSession: boolean): Promise<NewSessionData> {
-		if (this._user) {
+		if (this.userFacade.isLoggedIn()) {
 			throw new Error("user already logged in")
 		}
 
@@ -378,15 +348,18 @@ export class LoginFacadeImpl implements LoginFacade {
 
 		let sessionId = [this._getSessionListId(createSessionReturn.accessToken), this._getSessionElementId(createSessionReturn.accessToken)] as const
 		await this.initCache(userId, null)
-		await this.initSession(createSessionReturn.user, createSessionReturn.accessToken, userPassphraseKey, SessionType.Login)
-		const userGroupInfo = neverNull(this._userGroupInfo)
+		const {
+			user,
+			userGroupInfo,
+			accessToken
+		} = await this.initSession(createSessionReturn.user, createSessionReturn.accessToken, userPassphraseKey, SessionType.Login)
 		return {
-			user: assertNotNull<User>(this._user),
+			user,
 			userGroupInfo,
 			sessionId,
 			credentials: {
 				login: userId,
-				accessToken: neverNull(this._accessToken),
+				accessToken,
 				encryptedPassword: accessKey ? uint8ArrayToBase64(encryptString(accessKey, passphrase)) : null,
 				userId,
 				type: "external",
@@ -418,10 +391,6 @@ export class LoginFacadeImpl implements LoginFacade {
 		await this.serviceExecutor.post(SecondFactorAuthService, data)
 	}
 
-	// option 1: we call resumeSession. it sets user and does the rest async. If login fails, it sends a message to the client side.
-	// option 2: we call "useUser or smh", it sets users. Then we call resumeSession but we don't ?block? on it. If it fails, we catch it.
-
-
 	/**
 	 * Resume a session of stored credentials.
 	 */
@@ -448,10 +417,10 @@ export class LoginFacadeImpl implements LoginFacade {
 				userPassphraseKey = await this._loadUserPassphraseKey(credentials.login, passphrase)
 			}
 
-			await this.initSession(sessionData.userId, credentials.accessToken, userPassphraseKey, SessionType.Persistent)
+			const {user, userGroupInfo} = await this.initSession(sessionData.userId, credentials.accessToken, userPassphraseKey, SessionType.Persistent)
 			return {
-				user: neverNull(this._user),
-				userGroupInfo: neverNull(this._userGroupInfo),
+				user,
+				userGroupInfo,
 				sessionId: sessionId,
 			}
 		}
@@ -475,14 +444,14 @@ export class LoginFacadeImpl implements LoginFacade {
 		accessToken: Base64Url,
 		userPassphraseKey: Aes128Key,
 		sessionType: SessionType
-	): Promise<void> {
-		let userIdFromFormerLogin = this._user ? this._user._id : null
+	): Promise<{user: User, accessToken: string, userGroupInfo: GroupInfo}> {
+		let userIdFromFormerLogin = this.userFacade.getUser() ? this.userFacade.getUser()?._id : null
 
 		if (userIdFromFormerLogin && userId !== userIdFromFormerLogin) {
 			throw new Error("different user is tried to login in existing other user's session")
 		}
 
-		this._accessToken = accessToken
+		this.userFacade.setAccessToken(accessToken)
 
 		try {
 			const user = await this.entityClient.load(UserTypeRef, userId)
@@ -492,14 +461,14 @@ export class LoginFacadeImpl implements LoginFacade {
 			if (uint8ArrayToBase64(user.verifier) !== uint8ArrayToBase64(sha256Hash(createAuthVerifier(userPassphraseKey)))) {
 				// delete the obsolete session in parallel to make sure it can not be used any more
 				this.deleteSession(accessToken)
-				this._accessToken = null
+				this.userFacade.setAccessToken(null)
 				console.log("password has changed")
 				throw new NotAuthenticatedError("password has changed")
 			}
 
-			this._user = user
-			this.groupKeys[this.getUserGroupId()] = decryptKey(userPassphraseKey, this._user.userGroup.symEncGKey)
-			this._userGroupInfo = await this.entityClient.load(GroupInfoTypeRef, user.userGroup.groupInfo)
+			this.userFacade.setUser(user, userPassphraseKey)
+			const userGroupInfo = await this.entityClient.load(GroupInfoTypeRef, user.userGroup.groupInfo)
+			this.userFacade.setUserGroupInfo(userGroupInfo)
 
 			if (!isTest() && sessionType !== SessionType.Temporary && !isAdminClient()) {
 				// index new items in background
@@ -520,6 +489,7 @@ export class LoginFacadeImpl implements LoginFacade {
 			}
 
 			await this.storeEntropy()
+			return {user, accessToken, userGroupInfo}
 		} catch (e) {
 			this.resetSession()
 			throw e
@@ -550,8 +520,8 @@ export class LoginFacadeImpl implements LoginFacade {
 	_initIndexer(isUsingOfflineCache: boolean): Promise<void> {
 		return this._indexer
 				   .init({
-						   user: assertNotNull(this._user),
-						   userGroupKey: this.getUserGroupKey(),
+						   user: assertNotNull(this.userFacade.getUser()),
+						   userGroupKey: this.userFacade.getUserGroupKey(),
 						   isUsingOfflineCache
 					   }
 				   )
@@ -648,92 +618,13 @@ export class LoginFacadeImpl implements LoginFacade {
 	}
 
 	/**
-	 * @return The map which contains authentication data for the logged in user.
-	 */
-	createAuthHeaders(): Dict {
-		return this._accessToken
-			? {
-				accessToken: this._accessToken,
-			}
-			: {}
-	}
-
-	getUserGroupId(): Id {
-		return this.getLoggedInUser().userGroup.group
-	}
-
-	getAllGroupIds(): Id[] {
-		let groups = this.getLoggedInUser().memberships.map(membership => membership.group)
-		groups.push(this.getLoggedInUser().userGroup.group)
-		return groups
-	}
-
-	getUserGroupKey(): Aes128Key {
-		return this.groupKeys[this.getUserGroupId()] // the userGroupKey is always written after the login to this.groupKeys
-	}
-
-	getGroupKey(groupId: Id): Aes128Key {
-		if (!this.groupKeys[groupId]) {
-			this.groupKeys[groupId] = decryptKey(this.groupKeys[this.getUserGroupId()], this.getMembership(groupId).symEncGKey)
-		}
-
-		return this.groupKeys[groupId]
-	}
-
-	getMembership(groupId: Id): GroupMembership {
-		let membership = this.getLoggedInUser().memberships.find((g: GroupMembership) => g.group === groupId)
-
-		if (!membership) {
-			throw new Error(`No group with groupId ${groupId} found!`)
-		}
-
-		return membership
-	}
-
-	hasGroup(groupId: Id): boolean {
-		if (!this._user) {
-			return false
-		} else {
-			return groupId === this._user.userGroup.group || this._user.memberships.find(m => m.group === groupId) != null
-		}
-	}
-
-	getGroupId(groupType: GroupType): Id {
-		if (groupType === GroupType.User) {
-			return this.getUserGroupId()
-		} else {
-			let membership = this.getLoggedInUser().memberships.find(m => m.groupType === groupType)
-
-			if (!membership) {
-				throw new Error("could not find groupType " + groupType + " for user " + this.getLoggedInUser()._id)
-			}
-
-			return membership.group
-		}
-	}
-
-	getGroupIds(groupType: GroupType): Id[] {
-		return this.getLoggedInUser()
-				   .memberships.filter(m => m.groupType === groupType)
-				   .map(gm => gm.group)
-	}
-
-	isLoggedIn(): boolean {
-		return this._user != null
-	}
-
-	getLoggedInUser(): User {
-		return neverNull(this._user)
-	}
-
-	/**
 	 * Loads entropy from the last logout.
 	 */
 	loadEntropy(): Promise<void> {
-		return this.entityClient.loadRoot(TutanotaPropertiesTypeRef, this.getUserGroupId()).then(tutanotaProperties => {
+		return this.entityClient.loadRoot(TutanotaPropertiesTypeRef, this.userFacade.getUserGroupId()).then(tutanotaProperties => {
 			if (tutanotaProperties.groupEncEntropy) {
 				try {
-					let entropy = aes128Decrypt(this.getUserGroupKey(), neverNull(tutanotaProperties.groupEncEntropy))
+					let entropy = aes128Decrypt(this.userFacade.getUserGroupKey(), neverNull(tutanotaProperties.groupEncEntropy))
 					random.addStaticEntropy(entropy)
 				} catch (error) {
 					if (error instanceof CryptoError) {
@@ -746,8 +637,8 @@ export class LoginFacadeImpl implements LoginFacade {
 
 	storeEntropy(): Promise<void> {
 		// We only store entropy to the server if we are the leader
-		if (!this._accessToken || !this.isLeader()) return Promise.resolve()
-		const userGroupKey = this.getUserGroupKey()
+		if (!this.userFacade.isLoggedIn() || !this.userFacade.isLeader()) return Promise.resolve()
+		const userGroupKey = this.userFacade.getUserGroupKey()
 		const entropyData = createEntropyData({
 			groupEncEntropy: encryptBytes(userGroupKey, random.generateRandomData(32)),
 		})
@@ -765,37 +656,12 @@ export class LoginFacadeImpl implements LoginFacade {
 				   )
 	}
 
-	entityEventsReceived(data: EntityUpdate[]): Promise<void> {
-		return promiseMap(data, update => {
-			if (
-				this._user &&
-				update.operation === OperationType.UPDATE &&
-				isSameTypeRefByAttr(UserTypeRef, update.application, update.type) &&
-				isSameId(this._user._id, update.instanceId)
-			) {
-				return this.entityClient.load(UserTypeRef, this._user._id).then(updatedUser => {
-					this._user = updatedUser
-				})
-			} else if (
-				this._userGroupInfo &&
-				update.operation === OperationType.UPDATE &&
-				isSameTypeRefByAttr(GroupInfoTypeRef, update.application, update.type) &&
-				isSameId(this._userGroupInfo._id, [neverNull(update.instanceListId), update.instanceId])
-			) {
-				return this.entityClient.load(GroupInfoTypeRef, this._userGroupInfo._id).then(updatedUserGroupInfo => {
-					this._userGroupInfo = updatedUserGroupInfo
-				})
-			} else {
-				return Promise.resolve()
-			}
-		}).then(noOp)
-	}
-
 	async changePassword(oldPassword: string, newPassword: string): Promise<void> {
-		let oldAuthVerifier = createAuthVerifier(generateKeyFromPassphrase(oldPassword, neverNull(neverNull(this._user).salt), KeyLength.b128))
+		const userSalt = assertNotNull(this.userFacade.getLoggedInUser().salt)
+		let oldAuthVerifier = createAuthVerifier(generateKeyFromPassphrase(oldPassword, userSalt, KeyLength.b128))
 		let salt = generateRandomSalt()
 		let userPassphraseKey = generateKeyFromPassphrase(newPassword, salt, KeyLength.b128)
-		let pwEncUserGroupKey = encryptKey(userPassphraseKey, this.getUserGroupKey())
+		let pwEncUserGroupKey = encryptKey(userPassphraseKey, this.userFacade.getUserGroupKey())
 		let authVerifier = createAuthVerifier(userPassphraseKey)
 		let service = createChangePasswordData()
 		service.oldVerifier = oldAuthVerifier
@@ -807,9 +673,10 @@ export class LoginFacadeImpl implements LoginFacade {
 
 	async deleteAccount(password: string, reason: string, takeover: string): Promise<void> {
 		let d = createDeleteCustomerData()
-		d.authVerifier = createAuthVerifier(generateKeyFromPassphrase(password, neverNull(neverNull(this._user).salt), KeyLength.b128))
+		const userSalt = assertNotNull(this.userFacade.getLoggedInUser().salt)
+		d.authVerifier = createAuthVerifier(generateKeyFromPassphrase(password, userSalt, KeyLength.b128))
 		d.undelete = false
-		d.customer = neverNull(neverNull(this._user).customer)
+		d.customer = neverNull(neverNull(this.userFacade.getLoggedInUser()).customer)
 		d.reason = reason
 
 		if (takeover !== "") {
@@ -830,61 +697,6 @@ export class LoginFacadeImpl implements LoginFacade {
 		})
 	}
 
-	getRecoverCode(password: string): Promise<string> {
-		if (this._user == null || this._user.auth == null || this._user.auth.recoverCode == null) {
-			return Promise.reject(new Error("Auth is missing"))
-		}
-
-		const recoverCodeId = this._user.auth.recoverCode
-		const key = generateKeyFromPassphrase(password, neverNull(this._user.salt), KeyLength.b128)
-		const extraHeaders = {
-			authVerifier: createAuthVerifierAsBase64Url(key),
-		}
-		return this.entityClient.load(RecoverCodeTypeRef, recoverCodeId, undefined, extraHeaders).then(result => {
-			return uint8ArrayToHex(bitArrayToUint8Array(decrypt256Key(this.getUserGroupKey(), result.userEncRecoverCode)))
-		})
-	}
-
-	createRecoveryCode(password: string): Promise<string> {
-		const user = this._user
-
-		if (user == null || user.auth == null) {
-			throw new Error("Invalid state: no user or no user.auth")
-		}
-
-		const {
-			userEncRecoverCode,
-			recoverCodeEncUserGroupKey,
-			hexCode,
-			recoveryCodeVerifier
-		} = this.generateRecoveryCode(this.getUserGroupKey())
-		const recoverPasswordEntity = createRecoverCode()
-		recoverPasswordEntity.userEncRecoverCode = userEncRecoverCode
-		recoverPasswordEntity.recoverCodeEncUserGroupKey = recoverCodeEncUserGroupKey
-		recoverPasswordEntity._ownerGroup = this.getUserGroupId()
-		recoverPasswordEntity.verifier = recoveryCodeVerifier
-		const pwKey = generateKeyFromPassphrase(password, neverNull(user.salt), KeyLength.b128)
-		const authVerifier = createAuthVerifierAsBase64Url(pwKey)
-		return this.entityClient
-				   .setup(null, recoverPasswordEntity, {
-					   authVerifier,
-				   })
-				   .then(() => hexCode)
-	}
-
-	generateRecoveryCode(userGroupKey: Aes128Key): RecoverData {
-		const recoveryCode = aes256RandomKey()
-		const userEncRecoverCode = encrypt256Key(userGroupKey, recoveryCode)
-		const recoverCodeEncUserGroupKey = aes256EncryptKey(recoveryCode, userGroupKey)
-		const recoveryCodeVerifier = createAuthVerifier(recoveryCode)
-		return {
-			userEncRecoverCode,
-			recoverCodeEncUserGroupKey,
-			hexCode: uint8ArrayToHex(bitArrayToUint8Array(recoveryCode)),
-			recoveryCodeVerifier,
-		}
-	}
-
 	/** @inheritDoc */
 	recoverLogin(mailAddress: string, recoverCode: string, newPassword: string, clientIdentifier: string): Promise<void> {
 		const sessionData = createCreateSessionData()
@@ -899,10 +711,15 @@ export class LoginFacadeImpl implements LoginFacade {
 		// and therefore we would not be able to read the updated user
 		// additionally we do not want to use initSession() to keep the LoginFacade stateless (except second factor handling) because we do not want to have any race conditions
 		// when logging in normally after resetting the password
+		const tempAuthHeadersProvider: AuthHeadersProvider = {
+			createAuthHeaders(): Dict {
+				return {}
+			}
+		}
 		const eventRestClient = new EntityRestClient(
-			() => ({}),
+			tempAuthHeadersProvider,
 			this.restClient,
-			() => this.cryptoFacade(),
+			() => this.cryptoFacade,
 			this.instanceMapper,
 		)
 		const entityClient = new EntityClient(eventRestClient)
@@ -977,19 +794,6 @@ export class LoginFacadeImpl implements LoginFacade {
 		})
 	}
 
-	getUserGroupInfo(): GroupInfo {
-		return neverNull(this._userGroupInfo)
-	}
-
-	setLeaderStatus(status: WebsocketLeaderStatus): Promise<void> {
-		this._leaderStatus = status
-		console.log("New leader status set:", status.leaderStatus)
-		return this.worker.updateLeaderStatus(status)
-	}
-
-	isLeader(): boolean {
-		return this._leaderStatus.leaderStatus
-	}
 
 	generateTotpSecret(): Promise<TotpSecret> {
 		return this.getTotpVerifier().then(totp => totp.generateSecret())
@@ -1001,6 +805,28 @@ export class LoginFacadeImpl implements LoginFacade {
 
 	getTotpVerifier(): Promise<TotpVerifier> {
 		return Promise.resolve(new TotpVerifier())
+	}
+
+	async entityEventsReceived(data: EntityUpdate[]): Promise<void> {
+		// This is a compromise to not add entityClient to UserFacade which would introduce a circular dep.
+		for (const update of data) {
+			const user = this.userFacade.getUser()
+			if (
+				user != null &&
+				update.operation === OperationType.UPDATE &&
+				isSameTypeRefByAttr(UserTypeRef, update.application, update.type) &&
+				isSameId(user._id, update.instanceId)
+			) {
+				this.userFacade.updateUser(await this.entityClient.load(UserTypeRef, user._id))
+			} else if (
+				this.userFacade.isLoggedIn() &&
+				update.operation === OperationType.UPDATE &&
+				isSameTypeRefByAttr(GroupInfoTypeRef, update.application, update.type) &&
+				isSameId(this.userFacade.getUserGroupInfo()._id, [update.instanceListId, update.instanceId])
+			) {
+				this.userFacade.setUserGroupInfo(await this.entityClient.load(GroupInfoTypeRef, this.userFacade.getUserGroupInfo()._id))
+			}
+		}
 	}
 }
 

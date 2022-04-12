@@ -1,7 +1,7 @@
 import {AccountType, Const, GroupType} from "../../common/TutanotaConstants"
 import {GroupTypeRef} from "../../entities/sys/Group"
 import {encryptBytes, encryptString} from "../crypto/CryptoFacade"
-import {neverNull} from "@tutao/tutanota-utils"
+import {assertNotNull, neverNull, uint8ArrayToHex} from "@tutao/tutanota-utils"
 import {createResetPasswordData} from "../../entities/sys/ResetPasswordData"
 import {createMembershipAddData} from "../../entities/sys/MembershipAddData"
 import {createUserDataDelete} from "../../entities/sys/UserDataDelete"
@@ -11,7 +11,7 @@ import {createUserAccountCreateData} from "../../entities/tutanota/UserAccountCr
 import type {GroupManagementFacadeImpl} from "./GroupManagementFacade"
 import type {ContactFormUserData} from "../../entities/tutanota/ContactFormUserData"
 import {createContactFormUserData} from "../../entities/tutanota/ContactFormUserData"
-import type {LoginFacadeImpl, RecoverData} from "./LoginFacade"
+import type {RecoverData} from "./LoginFacade"
 import type {WorkerImpl} from "../WorkerImpl"
 import {CounterFacade} from "./CounterFacade"
 import {createUpdateAdminshipData} from "../../entities/sys/UpdateAdminshipData"
@@ -19,8 +19,12 @@ import type {User} from "../../entities/sys/User"
 import {assertWorkerOrNode} from "../../common/Env"
 import {
 	aes128RandomKey,
-	createAuthVerifier,
+	aes256EncryptKey,
+	aes256RandomKey,
+	bitArrayToUint8Array,
+	createAuthVerifier, createAuthVerifierAsBase64Url, decrypt256Key,
 	decryptKey,
+	encrypt256Key,
 	encryptKey,
 	generateKeyFromPassphrase,
 	generateRandomSalt,
@@ -32,12 +36,13 @@ import {EntityClient} from "../../common/EntityClient"
 import {IServiceExecutor} from "../../common/ServiceRequest"
 import {MembershipService, ResetPasswordService, SystemKeysService, UpdateAdminshipService, UserService} from "../../entities/sys/Services"
 import {UserAccountService} from "../../entities/tutanota/Services"
+import {UserFacade} from "./UserFacade"
+import {createRecoverCode, RecoverCodeTypeRef} from "../../entities/sys/RecoverCode"
 
 assertWorkerOrNode()
 
 export class UserManagementFacade {
 	_worker: WorkerImpl
-	_login: LoginFacadeImpl
 	_groupManagement: GroupManagementFacadeImpl
 	_counters: CounterFacade
 	_rsa: RsaImplementation
@@ -45,7 +50,7 @@ export class UserManagementFacade {
 
 	constructor(
 		worker: WorkerImpl,
-		login: LoginFacadeImpl,
+		private readonly userFacade: UserFacade,
 		groupManagement: GroupManagementFacadeImpl,
 		counters: CounterFacade,
 		rsa: RsaImplementation,
@@ -53,7 +58,6 @@ export class UserManagementFacade {
 		private readonly serviceExecutor: IServiceExecutor,
 	) {
 		this._worker = worker
-		this._login = login
 		this._groupManagement = groupManagement
 		this._counters = counters
 		this._rsa = rsa
@@ -76,9 +80,9 @@ export class UserManagementFacade {
 	}
 
 	async changeAdminFlag(user: User, admin: boolean): Promise<void> {
-		let adminGroupId = this._login.getGroupId(GroupType.Admin)
+		let adminGroupId = this.userFacade.getGroupId(GroupType.Admin)
 
-		let adminGroupKey = this._login.getGroupKey(adminGroupId)
+		let adminGroupKey = this.userFacade.getGroupKey(adminGroupId)
 
 		const userGroup = await this._entityClient.load(GroupTypeRef, user.userGroup.group)
 		let userGroupKey = decryptKey(adminGroupKey, neverNull(userGroup.adminGroupEncGKey))
@@ -92,7 +96,7 @@ export class UserManagementFacade {
 				const addAccountGroup = createMembershipAddData({
 					user: user._id,
 					group: keyData.group,
-					symEncGKey: encryptKey(userGroupKey, decryptKey(this._login.getUserGroupKey(), keyData.symEncGKey)),
+					symEncGKey: encryptKey(userGroupKey, decryptKey(this.userFacade.getUserGroupKey(), keyData.symEncGKey)),
 				})
 				await this.serviceExecutor.post(MembershipService, addAccountGroup)
 			}
@@ -114,7 +118,7 @@ export class UserManagementFacade {
 	 */
 	async _getAccountKeyData(): Promise<{group: Id, symEncGKey: Uint8Array}> {
 		const keysReturn = await this.serviceExecutor.get(SystemKeysService, null)
-		const user = this._login.getLoggedInUser()
+		const user = this.userFacade.getLoggedInUser()
 
 		if (user.accountType === AccountType.PREMIUM) {
 			return {
@@ -133,12 +137,12 @@ export class UserManagementFacade {
 	}
 
 	async updateAdminship(groupId: Id, newAdminGroupId: Id): Promise<void> {
-		let adminGroupId = this._login.getGroupId(GroupType.Admin)
+		let adminGroupId = this.userFacade.getGroupId(GroupType.Admin)
 		const newAdminGroup = await this._entityClient.load(GroupTypeRef, newAdminGroupId)
 		const group = await this._entityClient.load(GroupTypeRef, groupId)
 		const oldAdminGroup = await this._entityClient.load(GroupTypeRef, neverNull(group.admin))
 
-		const adminGroupKey = this._login.getGroupKey(adminGroupId)
+		const adminGroupKey = this.userFacade.getGroupKey(adminGroupId)
 
 		let groupKey
 		if (oldAdminGroup._id === adminGroupId) {
@@ -198,17 +202,17 @@ export class UserManagementFacade {
 	}
 
 	createUser(name: string, mailAddress: string, password: string, userIndex: number, overallNbrOfUsersToCreate: number): Promise<void> {
-		let adminGroupIds = this._login.getGroupIds(GroupType.Admin)
+		let adminGroupIds = this.userFacade.getGroupIds(GroupType.Admin)
 
 		if (adminGroupIds.length === 0) {
-			adminGroupIds = this._login.getGroupIds(GroupType.LocalAdmin)
+			adminGroupIds = this.userFacade.getGroupIds(GroupType.LocalAdmin)
 		}
 
 		const adminGroupId = adminGroupIds[0]
 
-		const adminGroupKey = this._login.getGroupKey(adminGroupId)
+		const adminGroupKey = this.userFacade.getGroupKey(adminGroupId)
 
-		let customerGroupKey = this._login.getGroupKey(this._login.getGroupId(GroupType.Customer))
+		let customerGroupKey = this.userFacade.getGroupKey(this.userFacade.getGroupId(GroupType.Customer))
 
 		let userGroupKey = aes128RandomKey()
 		let userGroupInfoSessionKey = aes128RandomKey()
@@ -229,7 +233,7 @@ export class UserManagementFacade {
 							   mailAddress,
 							   password,
 							   name,
-							   this._login.generateRecoveryCode(userGroupKey),
+							   this.generateRecoveryCode(userGroupKey),
 						   )
 						   return this.serviceExecutor.post(UserAccountService, data).then(() => {
 							   return this._worker.sendProgress(((userIndex + 1) / overallNbrOfUsersToCreate) * 100)
@@ -306,5 +310,61 @@ export class UserManagementFacade {
 		userData.mailEncMailBoxSessionKey = encryptKey(mailGroupKey, mailboxSessionKey)
 		userData.ownerEncMailGroupInfoSessionKey = encryptKey(mailGroupKey, mailGroupInfoSessionKey)
 		return userData
+	}
+
+	generateRecoveryCode(userGroupKey: Aes128Key): RecoverData {
+		const recoveryCode = aes256RandomKey()
+		const userEncRecoverCode = encrypt256Key(userGroupKey, recoveryCode)
+		const recoverCodeEncUserGroupKey = aes256EncryptKey(recoveryCode, userGroupKey)
+		const recoveryCodeVerifier = createAuthVerifier(recoveryCode)
+		return {
+			userEncRecoverCode,
+			recoverCodeEncUserGroupKey,
+			hexCode: uint8ArrayToHex(bitArrayToUint8Array(recoveryCode)),
+			recoveryCodeVerifier,
+		}
+	}
+
+	getRecoverCode(password: string): Promise<string> {
+		const user = this.userFacade.getLoggedInUser()
+		const recoverCodeId = user.auth?.recoverCode
+		if (recoverCodeId == null) {
+			return Promise.reject(new Error("Auth is missing"))
+		}
+
+		const key = generateKeyFromPassphrase(password, assertNotNull(user.salt), KeyLength.b128)
+		const extraHeaders = {
+			authVerifier: createAuthVerifierAsBase64Url(key),
+		}
+		return this._entityClient.load(RecoverCodeTypeRef, recoverCodeId, undefined, extraHeaders).then(result => {
+			return uint8ArrayToHex(bitArrayToUint8Array(decrypt256Key(this.userFacade.getUserGroupKey(), result.userEncRecoverCode)))
+		})
+	}
+
+	createRecoveryCode(password: string): Promise<string> {
+		const user = this.userFacade.getUser()
+
+		if (user == null || user.auth == null) {
+			throw new Error("Invalid state: no user or no user.auth")
+		}
+
+		const {
+			userEncRecoverCode,
+			recoverCodeEncUserGroupKey,
+			hexCode,
+			recoveryCodeVerifier
+		} = this.generateRecoveryCode(this.userFacade.getUserGroupKey())
+		const recoverPasswordEntity = createRecoverCode()
+		recoverPasswordEntity.userEncRecoverCode = userEncRecoverCode
+		recoverPasswordEntity.recoverCodeEncUserGroupKey = recoverCodeEncUserGroupKey
+		recoverPasswordEntity._ownerGroup = this.userFacade.getUserGroupId()
+		recoverPasswordEntity.verifier = recoveryCodeVerifier
+		const pwKey = generateKeyFromPassphrase(password, neverNull(user.salt), KeyLength.b128)
+		const authVerifier = createAuthVerifierAsBase64Url(pwKey)
+		return this._entityClient
+				   .setup(null, recoverPasswordEntity, {
+					   authVerifier,
+				   })
+				   .then(() => hexCode)
 	}
 }

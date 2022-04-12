@@ -35,6 +35,7 @@ import {InstanceMapper} from "./crypto/InstanceMapper"
 import {WsConnectionState} from "../main/WorkerClient";
 import {IEntityRestCache} from "./rest/EntityRestCache"
 import {SleepDetector} from "./utils/SleepDetector.js"
+import {UserFacade} from "./facades/UserFacade"
 
 assertWorkerOrNode()
 
@@ -119,11 +120,12 @@ export class EventBusClient {
 		private readonly indexer: Indexer,
 		private readonly cache: IEntityRestCache,
 		private readonly mail: MailFacade,
-		private readonly login: LoginFacadeImpl,
+		private readonly userFacade: UserFacade,
 		private readonly entity: EntityClient,
 		private readonly instanceMapper: InstanceMapper,
 		private readonly socketFactory: (path: string) => WebSocket,
 		private readonly sleepDetector: SleepDetector,
+		private readonly loginFacade: LoginFacadeImpl,
 	) {
 		this.state = EventBusState.Automatic
 		this.lastEntityEventIds = new Map()
@@ -177,7 +179,7 @@ export class EventBusClient {
 		this.state = EventBusState.Automatic
 		this.connectTimer = null
 
-		const authHeaders = this.login.createAuthHeaders()
+		const authHeaders = this.userFacade.createAuthHeaders()
 
 		// Native query building is not supported in old browser, mithril is not available in the worker
 		const authQuery =
@@ -188,7 +190,7 @@ export class EventBusClient {
 			"&clientVersion=" +
 			env.versionNumber +
 			"&userId=" +
-			this.login.getLoggedInUser()._id +
+			this.userFacade.getLoggedInUser()._id +
 			"&accessToken=" +
 			authHeaders.accessToken +
 			(this.lastAntiphishingMarkersId ? "&lastPhishingMarkersId=" + this.lastAntiphishingMarkersId : "")
@@ -310,7 +312,8 @@ export class EventBusClient {
 					JSON.parse(value),
 					null,
 				)
-				await this.login.setLeaderStatus(data)
+				await this.userFacade.setLeaderStatus(data)
+				await this.worker.updateLeaderStatus(data)
 				break
 			default:
 				console.log("ws message with unknown type", type)
@@ -322,7 +325,7 @@ export class EventBusClient {
 		this.failedConnectionAttempts++
 		console.log("ws close event:", event, "state:", this.state)
 
-		this.login.setLeaderStatus(
+		this.userFacade.setLeaderStatus(
 			createWebsocketLeaderStatus({
 				leaderStatus: false,
 			}),
@@ -342,7 +345,7 @@ export class EventBusClient {
 			// session is expired. do not try to reconnect until the user creates a new session
 			this.state = EventBusState.Suspended
 			this.worker.updateWebSocketState(WsConnectionState.connecting)
-		} else if (this.state === EventBusState.Automatic && this.login.isLoggedIn()) {
+		} else if (this.state === EventBusState.Automatic && this.userFacade.isLoggedIn()) {
 			this.worker.updateWebSocketState(WsConnectionState.connecting)
 
 			if (this.immediateReconnect) {
@@ -473,7 +476,7 @@ export class EventBusClient {
 
 	/** Load event batches since the last time we were connected to bring cache and other things up-to-date. */
 	private async loadMissedEntityEvents(): Promise<void> {
-		if (!this.login.isLoggedIn()) {
+		if (!this.userFacade.isLoggedIn()) {
 			return
 		}
 
@@ -586,7 +589,7 @@ export class EventBusClient {
 		} else if (
 			(this.socket == null || this.socket.readyState === WebSocket.CLOSED || this.socket.readyState === WebSocket.CLOSING) &&
 			this.state !== EventBusState.Terminated &&
-			this.login.isLoggedIn()
+			this.userFacade.isLoggedIn()
 		) {
 			// Don't try to connect right away because connection may not be actually there
 			// see #1165
@@ -627,7 +630,7 @@ export class EventBusClient {
 		try {
 			if (this.isTerminated()) return
 			const filteredEvents = await this.cache.entityEventsReceived(batch)
-			if (!this.isTerminated()) await this.login.entityEventsReceived(filteredEvents)
+			if (!this.isTerminated()) await this.loginFacade.entityEventsReceived(filteredEvents)
 			if (!this.isTerminated()) await this.mail.entityEventsReceived(filteredEvents)
 			if (!this.isTerminated()) await this.worker.entityEventsReceived(filteredEvents, batch.groupId)
 			// Call the indexer in this last step because now the processed event is stored and the indexer has a separate event queue that
@@ -672,10 +675,10 @@ export class EventBusClient {
 	}
 
 	private eventGroups(): Id[] {
-		return this.login
+		return this.userFacade
 				   .getLoggedInUser()
 				   .memberships.filter(membership => membership.groupType !== GroupType.MailingList)
 				   .map(membership => membership.group)
-				   .concat(this.login.getLoggedInUser().userGroup.group)
+				   .concat(this.userFacade.getLoggedInUser().userGroup.group)
 	}
 }

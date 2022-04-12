@@ -103,6 +103,7 @@ import {createReportMailPostData} from "../../entities/tutanota/ReportMailPostDa
 import {CounterService} from "../../entities/monitor/Services"
 import {PublicKeyService} from "../../entities/sys/Services"
 import {IServiceExecutor} from "../../common/ServiceRequest"
+import {UserFacade} from "./UserFacade"
 
 assertWorkerOrNode()
 type Attachments = ReadonlyArray<TutanotaFile | DataFile | FileReference>
@@ -138,7 +139,6 @@ interface UpdateDraftParams {
 }
 
 export class MailFacade {
-	_login: LoginFacadeImpl
 	_file: FileFacade
 	_phishingMarkers: Set<string>
 	_deferredDraftId: IdTuple | null // the mail id of the draft that we are waiting for to be updated via websocket
@@ -149,13 +149,12 @@ export class MailFacade {
 	_crypto: CryptoFacade
 
 	constructor(
-		login: LoginFacadeImpl,
+		private readonly userFacade: UserFacade,
 		fileFacade: FileFacade,
 		entity: EntityClient,
 		crypto: CryptoFacade,
 		private readonly serviceExecutor: IServiceExecutor,
 	) {
-		this._login = login
 		this._file = fileFacade
 		this._phishingMarkers = new Set()
 		this._deferredDraftId = null
@@ -165,7 +164,7 @@ export class MailFacade {
 	}
 
 	async createMailFolder(name: string, parent: IdTuple, ownerGroupId: Id): Promise<void> {
-		const mailGroupKey = this._login.getGroupKey(ownerGroupId)
+		const mailGroupKey = this.userFacade.getGroupKey(ownerGroupId)
 
 		const sk = aes128RandomKey()
 		const newFolder = createCreateMailFolderData({
@@ -204,11 +203,11 @@ export class MailFacade {
 			throw new MailBodyTooLargeError(`Can't update draft, mail body too large (${byteLength(bodyText)})`)
 		}
 
-		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this._login.getLoggedInUser(), senderMailAddress)
+		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this.userFacade.getLoggedInUser(), senderMailAddress)
 
-		const userGroupKey = this._login.getUserGroupKey()
+		const userGroupKey = this.userFacade.getUserGroupKey()
 
-		const mailGroupKey = this._login.getGroupKey(senderMailGroupId)
+		const mailGroupKey = this.userFacade.getGroupKey(senderMailGroupId)
 
 		const sk = aes128RandomKey()
 		const service = createDraftCreateData()
@@ -266,9 +265,9 @@ export class MailFacade {
 			throw new MailBodyTooLargeError(`Can't update draft, mail body too large (${byteLength(body)})`)
 		}
 
-		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this._login.getLoggedInUser(), senderMailAddress)
+		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this.userFacade.getLoggedInUser(), senderMailAddress)
 
-		const mailGroupKey = this._login.getGroupKey(senderMailGroupId)
+		const mailGroupKey = this.userFacade.getGroupKey(senderMailGroupId)
 
 		const sk = decryptKey(mailGroupKey, draft._ownerEncSessionKey as any)
 		const service = createDraftUpdateData()
@@ -409,7 +408,7 @@ export class MailFacade {
 	}
 
 	async sendDraft(draft: Mail, recipients: Array<RecipientDetails>, language: string): Promise<void> {
-		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this._login.getLoggedInUser(), draft.sender.address)
+		const senderMailGroupId = await this._getMailGroupIdForMailAddress(this.userFacade.getLoggedInUser(), draft.sender.address)
 		const bucketKey = aes128RandomKey()
 		const sendDraftData = createSendDraftData()
 		sendDraftData.language = language
@@ -432,7 +431,7 @@ export class MailFacade {
 		}
 
 		await Promise.all([
-			this._entityClient.loadRoot(TutanotaPropertiesTypeRef, this._login.getUserGroupId()).then(tutanotaProperties => {
+			this._entityClient.loadRoot(TutanotaPropertiesTypeRef, this.userFacade.getUserGroupId()).then(tutanotaProperties => {
 				sendDraftData.plaintext = tutanotaProperties.sendPlaintextOnly
 			}),
 			resolveSessionKey(MailTypeModel, draft).then(mailSessionkey => {
@@ -560,7 +559,7 @@ export class MailFacade {
 			if (recipient.isExternal) {
 				const password = recipient.password
 
-				if (password == null || !isSameId(this._login.getGroupId(GroupType.Mail), senderMailGroupId)) {
+				if (password == null || !isSameId(this.userFacade.getGroupId(GroupType.Mail), senderMailGroupId)) {
 					// no password given and prevent sending to secure externals from shared group
 					notFoundRecipients.push(recipient.mailAddress)
 					continue
@@ -610,7 +609,7 @@ export class MailFacade {
 		externalUserGroupKey: Aes128Key
 		externalMailGroupKey: Aes128Key
 	}> {
-		return this._entityClient.loadRoot(GroupRootTypeRef, this._login.getUserGroupId()).then(groupRoot => {
+		return this._entityClient.loadRoot(GroupRootTypeRef, this.userFacade.getUserGroupId()).then(groupRoot => {
 			let cleanedMailAddress = recipientMailAddress.trim().toLocaleLowerCase()
 			let mailAddressId = stringToCustomId(cleanedMailAddress)
 			return this._entityClient
@@ -622,7 +621,7 @@ export class MailFacade {
 								   this._entityClient.load(GroupTypeRef, mailGroupId),
 								   this._entityClient.load(GroupTypeRef, externalUserReference.userGroup),
 							   ]).then(([externalMailGroup, externalUserGroup]) => {
-								   let externalUserGroupKey = decryptKey(this._login.getUserGroupKey(), neverNull(externalUserGroup.adminGroupEncGKey))
+								   let externalUserGroupKey = decryptKey(this.userFacade.getUserGroupKey(), neverNull(externalUserGroup.adminGroupEncGKey))
 								   let externalMailGroupKey = decryptKey(externalUserGroupKey, neverNull(externalMailGroup.adminGroupEncGKey))
 								   return {
 									   externalUserGroupKey,
@@ -634,7 +633,7 @@ export class MailFacade {
 					   .catch(
 						   ofClass(NotFoundError, e => {
 							   // it does not exist, so create it
-							   let internalMailGroupKey = this._login.getGroupKey(this._login.getGroupId(GroupType.Mail))
+							   let internalMailGroupKey = this.userFacade.getGroupKey(this.userFacade.getGroupId(GroupType.Mail))
 
 							   let externalUserGroupKey = aes128RandomKey()
 							   let externalMailGroupKey = aes128RandomKey()
@@ -658,7 +657,7 @@ export class MailFacade {
 							   let userGroupData = createCreateExternalUserGroupData()
 							   userGroupData.mailAddress = cleanedMailAddress
 							   userGroupData.externalPwEncUserGroupKey = encryptKey(externalUserPwKey, externalUserGroupKey)
-							   userGroupData.internalUserEncUserGroupKey = encryptKey(this._login.getUserGroupKey(), externalUserGroupKey)
+							   userGroupData.internalUserEncUserGroupKey = encryptKey(this.userFacade.getUserGroupKey(), externalUserGroupKey)
 							   d.userGroupData = userGroupData
 							   return this.serviceExecutor.post(ExternalUserService, d).then(() => {
 								   return {
