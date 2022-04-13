@@ -80,7 +80,6 @@ import {
 } from "@tutao/tutanota-crypto"
 import {CryptoFacade, encryptBytes, encryptString} from "../crypto/CryptoFacade"
 import {InstanceMapper} from "../crypto/InstanceMapper"
-import type {SecondFactorAuthHandler} from "../../../misc/2fa/SecondFactorHandler"
 import {createSecondFactorAuthDeleteData} from "../../entities/sys/SecondFactorAuthDeleteData"
 import type {SecondFactorAuthData} from "../../entities/sys/SecondFactorAuthData"
 import {Aes128Key} from "@tutao/tutanota-crypto/dist/encryption/Aes"
@@ -89,6 +88,7 @@ import {IServiceExecutor} from "../../common/ServiceRequest"
 import {SessionType} from "../../common/SessionType"
 import {LateInitializedCacheStorage} from "../rest/CacheStorageProxy"
 import {AuthHeadersProvider, UserFacade} from "./UserFacade"
+import {ILoginListener} from "../../main/LoginListener"
 
 assertWorkerOrNode()
 const RETRY_TIMOUT_AFTER_INIT_INDEXER_ERROR_MS = 30000
@@ -183,7 +183,7 @@ export class LoginFacadeImpl implements LoginFacade {
 		readonly worker: WorkerImpl,
 		private readonly restClient: RestClient,
 		private readonly entityClient: EntityClient,
-		private readonly secondFactorAuthHandler: SecondFactorAuthHandler,
+		private readonly loginListener: ILoginListener,
 		private readonly instanceMapper: InstanceMapper,
 		private readonly cryptoFacade: CryptoFacade,
 		/**
@@ -275,7 +275,7 @@ export class LoginFacadeImpl implements LoginFacade {
 
 		if (createSessionReturn.challenges.length > 0) {
 			// Show a message to the user and give them a chance to complete the challenges.
-			this.secondFactorAuthHandler.showSecondFactorAuthenticationDialog(sessionId, createSessionReturn.challenges, mailAddress)
+			this.loginListener.onSecondFactorChallenge(sessionId, createSessionReturn.challenges, mailAddress)
 
 			p = this._waitUntilSecondFactorApproved(createSessionReturn.accessToken, sessionId, 0)
 		}
@@ -424,6 +424,7 @@ export class LoginFacadeImpl implements LoginFacade {
 		if (usingOfflineStorage) {
 			const user = await this.entityClient.load(UserTypeRef, credentials.userId)
 			this.userFacade.setUser(user)
+			this.loginListener.onPartialLoginSuccess()
 			// noinspection ES6MissingAwait: it's started async on purpose
 			loadAndInitSession()
 			return {
@@ -463,10 +464,16 @@ export class LoginFacadeImpl implements LoginFacade {
 				throw new NotAuthenticatedError("password has changed")
 			}
 
-			this.userFacade.setUser(user)
+			const wasPartiallyLoggedIn = this.userFacade.isPartiallyLoggedIn()
+			if (!wasPartiallyLoggedIn) {
+				this.userFacade.setUser(user)
+				this.loginListener.onPartialLoginSuccess()
+			}
+
 			this.userFacade.unlockUserGroupKey(userPassphraseKey)
 			const userGroupInfo = await this.entityClient.load(GroupInfoTypeRef, user.userGroup.groupInfo)
 			this.userFacade.setUserGroupInfo(userGroupInfo)
+
 
 			if (!isTest() && sessionType !== SessionType.Temporary && !isAdminClient()) {
 				// index new items in background
@@ -487,6 +494,7 @@ export class LoginFacadeImpl implements LoginFacade {
 			}
 
 			await this.storeEntropy()
+			this.loginListener.onFullLoginSuccess()
 			return {user, accessToken, userGroupInfo}
 		} catch (e) {
 			this.resetSession()

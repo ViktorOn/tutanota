@@ -55,6 +55,7 @@ import {UsageTestModel} from "../../misc/UsageTestModel"
 import {deviceConfig} from "../../misc/DeviceConfig"
 import {IServiceExecutor} from "../common/ServiceRequest.js"
 import type {InterWindowEventBus} from "../../native/common/InterWindowEventBus"
+import {LoginListener} from "./LoginListener"
 
 assertMainOrNode()
 
@@ -100,6 +101,7 @@ export interface IMainLocator {
 	readonly interWindowEventBus: InterWindowEventBus
 	readonly init: () => Promise<void>
 	readonly initialized: Promise<void>
+	readonly loginListener: LoginListener
 }
 
 class MainLocator implements IMainLocator {
@@ -137,6 +139,7 @@ class MainLocator implements IMainLocator {
 	usageTestModel!: UsageTestModel
 	serviceExecutor!: IServiceExecutor
 	_interWindowEventBus!: InterWindowEventBus
+	loginListener!: LoginListener
 
 	private _nativeInterfaces: NativeInterfaces | null = null
 
@@ -242,7 +245,7 @@ class MainLocator implements IMainLocator {
 			contactFormFacade,
 			deviceEncryptionFacade,
 			restInterface,
-			serviceExecutor
+			serviceExecutor,
 		} = this.worker.getWorkerInterface()
 		this.loginFacade = loginFacade
 		this.customerFacade = customerFacade
@@ -268,6 +271,7 @@ class MainLocator implements IMainLocator {
 		this.entityClient = new EntityClient(restInterface)
 		this.webauthnClient = new WebauthnClient(this.webauthnController, getWebRoot())
 		this.secondFactorHandler = new SecondFactorHandler(this.eventController, this.entityClient, this.webauthnClient, this.loginFacade)
+		this.loginListener = new LoginListener(this.secondFactorHandler, logins)
 		this.credentialsProvider = await createCredentialsProvider(deviceEncryptionFacade, this._nativeInterfaces?.native ?? null, isDesktop() ? this.interWindowEventBus : null)
 		this.mailModel = new MailModel(notifications, this.eventController, this.worker, this.mailFacade, this.entityClient)
 		this.usageTestModel = new UsageTestModel(
