@@ -345,7 +345,7 @@ export class EventBusClient {
 			// session is expired. do not try to reconnect until the user creates a new session
 			this.state = EventBusState.Suspended
 			this.worker.updateWebSocketState(WsConnectionState.connecting)
-		} else if (this.state === EventBusState.Automatic && this.userFacade.isLoggedIn()) {
+		} else if (this.state === EventBusState.Automatic && this.userFacade.isFullyLoggedIn()) {
 			this.worker.updateWebSocketState(WsConnectionState.connecting)
 
 			if (this.immediateReconnect) {
@@ -476,7 +476,7 @@ export class EventBusClient {
 
 	/** Load event batches since the last time we were connected to bring cache and other things up-to-date. */
 	private async loadMissedEntityEvents(): Promise<void> {
-		if (!this.userFacade.isLoggedIn()) {
+		if (!this.userFacade.isFullyLoggedIn()) {
 			return
 		}
 
@@ -589,7 +589,7 @@ export class EventBusClient {
 		} else if (
 			(this.socket == null || this.socket.readyState === WebSocket.CLOSED || this.socket.readyState === WebSocket.CLOSING) &&
 			this.state !== EventBusState.Terminated &&
-			this.userFacade.isLoggedIn()
+			this.userFacade.isFullyLoggedIn()
 		) {
 			// Don't try to connect right away because connection may not be actually there
 			// see #1165
