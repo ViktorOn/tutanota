@@ -1,6 +1,6 @@
 import {Challenge} from "../entities/sys/Challenge.js"
 import {SecondFactorHandler} from "../../misc/2fa/SecondFactorHandler.js"
-import {LoginController} from "./LoginController.js"
+import {defer, DeferredObject} from "@tutao/tutanota-utils"
 
 /** Listener for the login events from the worker side. */
 export interface ILoginListener {
@@ -24,10 +24,15 @@ export interface ILoginListener {
 
 export class LoginListener implements ILoginListener {
 
+	private loginPromise: DeferredObject<void> = defer()
+
 	constructor(
 		private readonly secondFactorHandler: SecondFactorHandler,
-		private readonly loginController: LoginController,
 	) {
+	}
+
+	waitForFullLogin(): Promise<void> {
+		return this.loginPromise.promise
 	}
 
 	onPartialLoginSuccess(): Promise<void> {
@@ -35,10 +40,11 @@ export class LoginListener implements ILoginListener {
 	}
 
 	async onFullLoginSuccess(): Promise<void> {
-		return this.loginController.setFullyLoggedIn()
+		this.loginPromise.resolve()
 	}
 
 	onLoginError(): Promise<void> {
+		// this._loginPromise.reject()
 		return Promise.resolve()
 	}
 

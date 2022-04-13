@@ -1,5 +1,5 @@
 import type {DeferredObject} from "@tutao/tutanota-utils"
-import {assertNotNull, defer, remove} from "@tutao/tutanota-utils"
+import {assertNotNull, defer} from "@tutao/tutanota-utils"
 import {assertMainOrNodeBoot} from "../common/Env"
 import type {IUserController, UserControllerInitData} from "./UserController"
 import {getWhitelabelCustomizations} from "../../misc/WhitelabelCustomizations"
@@ -10,6 +10,7 @@ import type {Credentials} from "../../misc/credentials/Credentials"
 import {FeatureType} from "../common/TutanotaConstants";
 import {CredentialsAndDatabaseKey} from "../../misc/credentials/CredentialsProvider"
 import {SessionType} from "../common/SessionType"
+import {IMainLocator} from "./MainLocator"
 
 assertMainOrNodeBoot()
 
@@ -49,8 +50,6 @@ export interface LoginController {
 	deleteOldSession(credentials: Credentials): Promise<void>
 
 	addPostLoginAction(handler: IPostLoginAction): void
-
-	setFullyLoggedIn(): void
 }
 
 export class LoginControllerImpl implements LoginController {
@@ -61,16 +60,21 @@ export class LoginControllerImpl implements LoginController {
 	private _isWhitelabel: boolean = !!getWhitelabelCustomizations(window)
 	private postLoginActions: Array<IPostLoginAction> = []
 
-	async _getLoginFacade(): Promise<LoginFacade> {
+	private async getMainLocator(): Promise<IMainLocator> {
 		const {locator} = await import("./MainLocator")
 		await locator.initialized
+		return locator
+	}
+
+	private async getLoginFacade(): Promise<LoginFacade> {
+		const locator = await this.getMainLocator()
 		const worker = locator.worker
 		await worker.initialized
 		return locator.loginFacade
 	}
 
 	async createSession(username: string, password: string, sessionType: SessionType, databaseKey: Uint8Array | null): Promise<Credentials> {
-		const loginFacade = await this._getLoginFacade()
+		const loginFacade = await this.getLoginFacade()
 		const {user, credentials, sessionId, userGroupInfo} = await loginFacade.createSession(
 			username,
 			password,
@@ -111,7 +115,7 @@ export class LoginControllerImpl implements LoginController {
 	}
 
 	async createExternalSession(userId: Id, password: string, salt: Uint8Array, clientIdentifier: string, sessionType: SessionType): Promise<Credentials> {
-		const loginFacade = await this._getLoginFacade()
+		const loginFacade = await this.getLoginFacade()
 		const persistentSession = sessionType === SessionType.Persistent
 		const {
 			user,
@@ -133,7 +137,7 @@ export class LoginControllerImpl implements LoginController {
 	}
 
 	async resumeSession({credentials, databaseKey}: CredentialsAndDatabaseKey, externalUserSalt?: Uint8Array): Promise<void> {
-		const loginFacade = await this._getLoginFacade()
+		const loginFacade = await this.getLoginFacade()
 		const {user, userGroupInfo, sessionId} = await loginFacade.resumeSession(credentials, externalUserSalt ?? null, databaseKey ?? null)
 		await this.onLoginSuccess(
 			{
@@ -155,8 +159,9 @@ export class LoginControllerImpl implements LoginController {
 		return this.userLogin.promise
 	}
 
-	waitForFullLogin(): Promise<void> {
-		return this.fullLogin.promise
+	async waitForFullLogin(): Promise<void> {
+		const locator = await this.getMainLocator()
+		return locator.loginListener.waitForFullLogin()
 	}
 
 	isInternalUserLoggedIn(): boolean {
@@ -206,7 +211,7 @@ export class LoginControllerImpl implements LoginController {
 	}
 
 	async deleteOldSession(credentials: Credentials): Promise<void> {
-		const loginFacade = await this._getLoginFacade()
+		const loginFacade = await this.getLoginFacade()
 
 		try {
 			await loginFacade.deleteSession(credentials.accessToken)
@@ -217,10 +222,6 @@ export class LoginControllerImpl implements LoginController {
 				throw e
 			}
 		}
-	}
-
-	setFullyLoggedIn() {
-		this.fullLogin.resolve()
 	}
 }
 

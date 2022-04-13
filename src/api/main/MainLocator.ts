@@ -271,7 +271,7 @@ class MainLocator implements IMainLocator {
 		this.entityClient = new EntityClient(restInterface)
 		this.webauthnClient = new WebauthnClient(this.webauthnController, getWebRoot())
 		this.secondFactorHandler = new SecondFactorHandler(this.eventController, this.entityClient, this.webauthnClient, this.loginFacade)
-		this.loginListener = new LoginListener(this.secondFactorHandler, logins)
+		this.loginListener = new LoginListener(this.secondFactorHandler)
 		this.credentialsProvider = await createCredentialsProvider(deviceEncryptionFacade, this._nativeInterfaces?.native ?? null, isDesktop() ? this.interWindowEventBus : null)
 		this.mailModel = new MailModel(notifications, this.eventController, this.worker, this.mailFacade, this.entityClient)
 		this.usageTestModel = new UsageTestModel(
