@@ -1,6 +1,6 @@
 import {AccountType, GroupType, OperationType} from "../common/TutanotaConstants"
 import type {Base64Url} from "@tutao/tutanota-utils"
-import {downcast, first, mapAndFilterNull, neverNull, noOp, ofClass, promiseMap} from "@tutao/tutanota-utils"
+import {downcast, first, mapAndFilterNull, neverNull, ofClass} from "@tutao/tutanota-utils"
 import type {Customer} from "../entities/sys/Customer"
 import {CustomerTypeRef} from "../entities/sys/Customer"
 import type {User} from "../entities/sys/User"
@@ -187,34 +187,26 @@ export class UserController implements IUserController {
 		return this.user.memberships.filter(membership => membership.groupType === GroupType.Template)
 	}
 
-	entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
-		return promiseMap(updates, update => {
+	async entityEventsReceived(updates: ReadonlyArray<EntityUpdateData>, eventOwnerGroupId: Id): Promise<void> {
+		for (const update of updates) {
 			const {instanceListId, instanceId, operation} = update
-
 			if (operation === OperationType.UPDATE && isUpdateForTypeRef(UserTypeRef, update) && isSameId(this.user.userGroup.group, eventOwnerGroupId)) {
-				return this.entityClient.load(UserTypeRef, this.user._id).then(updatedUser => {
-					this.user = updatedUser
-				})
+				this.user = await this.entityClient.load(UserTypeRef, this.user._id)
 			} else if (
 				operation === OperationType.UPDATE &&
 				isUpdateForTypeRef(GroupInfoTypeRef, update) &&
 				isSameId(this.userGroupInfo._id, [neverNull(instanceListId), instanceId])
 			) {
-				return this.entityClient.load(GroupInfoTypeRef, this.userGroupInfo._id).then(updatedUserGroupInfo => {
-					this.userGroupInfo = updatedUserGroupInfo
-				})
+				this.userGroupInfo = await this.entityClient.load(GroupInfoTypeRef, this.userGroupInfo._id)
 			} else if (isUpdateForTypeRef(TutanotaPropertiesTypeRef, update) && operation === OperationType.UPDATE) {
-				return this.entityClient.loadRoot(TutanotaPropertiesTypeRef, this.user.userGroup.group).then(props => {
-					this.props = props
-				})
+				this.props = await this.entityClient.loadRoot(TutanotaPropertiesTypeRef, this.user.userGroup.group)
 			} else if (isUpdateForTypeRef(UserSettingsGroupRootTypeRef, update)) {
-				return this.entityClient.load(UserSettingsGroupRootTypeRef, this.user.userGroup.group).then(userSettingsGroupRoot => {
-					this.userSettingsGroupRoot = userSettingsGroupRoot
-				})
+				this.userSettingsGroupRoot = await this.entityClient.load(UserSettingsGroupRootTypeRef, this.user.userGroup.group)
+			} else if (isUpdateForTypeRef(CustomerInfoTypeRef, update) && operation === OperationType.CREATE) {
+				// After premium upgrade customer info is deleted and created with new id. We want to make sure that it's cached for offline login.
+				await this.entityClient.load(CustomerInfoTypeRef, [update.instanceListId, update.instanceId])
 			}
-
-			return Promise.resolve()
-		}).then(noOp)
+		}
 	}
 
 	async deleteSession(sync: boolean): Promise<void> {
@@ -344,7 +336,7 @@ export type UserControllerInitData = {
 }
 // noinspection JSUnusedGlobalSymbols
 // dynamically imported
-export function initUserController(
+export async function initUserController(
 	{
 		user,
 		userGroupInfo,
@@ -354,22 +346,17 @@ export function initUserController(
 	}: UserControllerInitData
 ): Promise<UserController> {
 	const entityClient = locator.entityClient
-	return Promise.all([
+	const [
+		props,
+		userSettingsGroupRoot,
+	] = await Promise.all([
 		entityClient.loadRoot(TutanotaPropertiesTypeRef, user.userGroup.group),
-		entityClient.load(UserSettingsGroupRootTypeRef, user.userGroup.group).catch(
-			ofClass(NotFoundError, () =>
-				entityClient
-					.setup(
-						null,
-						Object.assign(createUserSettingsGroupRoot(), {
-							_ownerGroup: user.userGroup.group,
-						}),
-					)
-					.then(() => entityClient.load(UserSettingsGroupRootTypeRef, user.userGroup.group)),
-			),
-		),
-	]).then(
-		([props, userSettingsGroupRoot]) =>
-			new UserController(user, userGroupInfo, sessionId, props, accessToken, persistentSession, userSettingsGroupRoot, entityClient),
-	)
+		entityClient.load(UserSettingsGroupRootTypeRef, user.userGroup.group)
+					.catch(ofClass(NotFoundError, () =>
+							entityClient.setup(null, createUserSettingsGroupRoot({_ownerGroup: user.userGroup.group}))
+										.then(() => entityClient.load(UserSettingsGroupRootTypeRef, user.userGroup.group)),
+						),
+					),
+	])
+	return new UserController(user, userGroupInfo, sessionId, props, accessToken, persistentSession, userSettingsGroupRoot, entityClient)
 }
