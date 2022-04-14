@@ -157,15 +157,16 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 		locator.cachingEntityClient,
 		locator.serviceExecutor,
 		locator.booking,
+		locator.crypto,
 	)
 	const fileApp = new NativeFileApp(worker)
 	const aesApp = new AesApp(worker)
 	locator.blob = new BlobFacade(locator.login, locator.serviceExecutor, locator.restClient, suspensionHandler, fileApp, aesApp, locator.instanceMapper, locator.crypto)
-	locator.file = new FileFacade(locator.login, locator.restClient, suspensionHandler, fileApp, aesApp, locator.instanceMapper, locator.serviceExecutor)
+	locator.file = new FileFacade(locator.login, locator.restClient, suspensionHandler, fileApp, aesApp, locator.instanceMapper, locator.serviceExecutor, locator.crypto)
 	locator.mail = new MailFacade(locator.login, locator.file, locator.blob, locator.cachingEntityClient, locator.crypto, locator.serviceExecutor)
 	// not needed for admin client
 	if (cache) {
-		locator.calendar = new CalendarFacade(locator.login, locator.groupManagement, cache, worker, worker, locator.instanceMapper, locator.serviceExecutor)
+		locator.calendar = new CalendarFacade(locator.login, locator.groupManagement, cache, worker, worker, locator.instanceMapper, locator.serviceExecutor, locator.crypto)
 	}
 	locator.mailAddress = new MailAddressFacade(locator.login, locator.serviceExecutor)
 
@@ -186,7 +187,7 @@ export async function initLocator(worker: WorkerImpl, browserData: BrowserData) 
 	locator.login.init(locator.indexer, locator.eventBusClient)
 	locator.Const = Const
 	locator.share = new ShareFacade(locator.login, locator.crypto, locator.serviceExecutor)
-	locator.giftCards = new GiftCardFacadeImpl(locator.login, locator.serviceExecutor)
+	locator.giftCards = new GiftCardFacadeImpl(locator.login, locator.serviceExecutor, locator.crypto)
 	locator.configFacade = new ConfigurationDatabase(locator.login)
 	locator.contactFormFacade = new ContactFormFacadeImpl(locator.restClient, locator.instanceMapper)
 	locator.deviceEncryptionFacade = new Aes256DeviceEncryptionFacade()
