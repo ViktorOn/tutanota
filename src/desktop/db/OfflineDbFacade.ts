@@ -83,6 +83,25 @@ export class OfflineDbFacade {
 		return this.getDbForUserId(userId).putMetadata(key, value)
 	}
 
+	async deleteEntitiesBeforeId(userId: Id, type: string, cutoffId: Id): Promise<void> {
+		return this.getDbForUserId(userId).deleteEntitiesBeforeId(type, cutoffId)
+	}
+
+	async deleteList(userId: Id, type: string, listId: Id): Promise<void> {
+		return this.getDbForUserId(userId).deleteList(type, listId)
+	}
+
+	async getLists(userId: Id): Promise<Array<{type: string, listId: Id}>> {
+		return this.getDbForUserId(userId).getLists()
+	}
+
+	async deleteRange(userId: Id, type: string, listId: string) {
+		return this.getDbForUserId(userId).deleteRange(type, listId)
+	}
+
+	async getAll(userId: Id, typeId: string): Promise<Array<Uint8Array>> {
+		return this.getDbForUserId(userId).getAll(typeId)
+	}
 
 	private getDbForUserId(userId: Id,): OfflineDb {
 		const db = this.cache.get(userId)

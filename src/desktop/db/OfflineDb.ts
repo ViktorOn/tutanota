@@ -137,7 +137,7 @@ export class OfflineDb {
 	getIdsInRange(type: string, listId: Id): Array<Id> {
 		const range = this.getRange(type, listId)
 		if (range == null) {
-			throw new Error(`no range exists for ${type} and list ${listId}`)
+			return []
 		}
 		const {lower, upper} = range
 		return this.db.prepare("SELECT elementId FROM list_entities WHERE type = :type AND listId = :listId AND firstIdBiggerOrEq(elementId, :lower) AND NOT(firstIdBigger(elementId, :upper))")
@@ -169,6 +169,18 @@ export class OfflineDb {
 		}
 
 		return result?.entity ?? null
+	}
+
+	getAll(type: string): Array<Buffer> {
+
+		// We query both entity tables, but at most one of the queries should ever actually return data
+		const elements = this.db.prepare("SELECT entity from element_entities WHERE type = :type")
+							 .all({type}) ?? []
+
+		const listElements = this.db.prepare("SELECT entity from list_entities WHERE type = :type")
+								 .all({type}) ?? []
+
+		return elements.concat(listElements)
 	}
 
 	delete(type: string, listId: string | null, elementId: string) {
@@ -207,13 +219,37 @@ export class OfflineDb {
 			.run({key, value})
 	}
 
+	deleteEntitiesBeforeId(type: string, cutoffId: Id) {
+		this.db.transaction(() => {
+			this.db.prepare("DELETE FROM element_entities WHERE type = :type AND firstIdBigger(:cutoffId, elementId)").run({type, cutoffId})
+			this.db.prepare("DELETE FROM list_entities WHERE type = :type AND firstIdBigger(:cutoffId, elementId)").run({type, cutoffId})
+		}).immediate()
+	}
+
+	deleteList(type: string, listId: Id) {
+		this.db.transaction(() => {
+			this.db.prepare("DELETE FROM list_entities WHERE type = :type AND listId = :listId").run({type, listId})
+			this.deleteRange(type, listId)
+		}).immediate()
+	}
+
+	deleteRange(type: string, listId: string) {
+		this.db.prepare("DELETE FROM ranges WHERE type = :type AND listId = :listId").run({type, listId})
+	}
+
+	getLists(): Array<{type: string, listId: Id}> {
+		return this.db.prepare("SELECT type, listId FROM ranges").all() ?? []
+	}
+
+	compactDatabase() {
+		this.db.exec("VACUUM")
+	}
 	printDatabaseInfo() {
 		console.log("sqlcipher version: ", this.db.pragma("cipher_version"))
 		console.log("sqlcipher configuration: ", this.db.pragma("cipher_settings"))
 		console.log("cipher provider: ", this.db.pragma("cipher_provider"))
 		console.log("cipher provider version: ", this.db.pragma("cipher_provider_version"))
 	}
-
 	/**
 	 * Throws a CryptoError if MAC verification fails
 	 */

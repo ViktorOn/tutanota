@@ -1,10 +1,10 @@
 import m, {Children} from "mithril"
-import {assertMainOrNode, isApp} from "../api/common/Env"
+import {assertMainOrNode, isApp, isOfflineStorageAvailable} from "../api/common/Env"
 import {lang} from "../misc/LanguageViewModel"
 import type {TutanotaProperties} from "../api/entities/tutanota/TutanotaProperties"
 import {TutanotaPropertiesTypeRef} from "../api/entities/tutanota/TutanotaProperties"
 import {FeatureType, InboxRuleType, OperationType, ReportMovedMailsType} from "../api/common/TutanotaConstants"
-import {LazyLoaded, neverNull, noOp, ofClass} from "@tutao/tutanota-utils"
+import {DAY_IN_MILLIS, defer, LazyLoaded, neverNull, noOp, ofClass} from "@tutao/tutanota-utils"
 import {MailFolderTypeRef} from "../api/entities/tutanota/MailFolder"
 import {getInboxRuleTypeName} from "../mail/model/InboxRuleHandler"
 import type {EditAliasesFormAttrs} from "./EditAliasesFormN"
@@ -24,7 +24,7 @@ import {isUpdateForTypeRef} from "../api/main/EventController"
 import type {DropDownSelectorAttrs} from "../gui/base/DropDownSelectorN"
 import {DropDownSelectorN} from "../gui/base/DropDownSelectorN"
 import type {TextFieldAttrs} from "../gui/base/TextFieldN"
-import {TextFieldN} from "../gui/base/TextFieldN"
+import {TextFieldN, TextFieldType} from "../gui/base/TextFieldN"
 import type {ButtonAttrs} from "../gui/base/ButtonN"
 import {ButtonN, ButtonType} from "../gui/base/ButtonN"
 import type {TableAttrs, TableLineAttrs} from "../gui/base/TableN"
@@ -67,6 +67,8 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 	_outOfOfficeNotification: LazyLoaded<OutOfOfficeNotification | null>
 	_outOfOfficeStatus: Stream<string> // stores the status label, based on whether the notification is/ or will really be activated (checking start time/ end time)
 
+	private storedDataTimeRangeMs: number | null = null
+
 	constructor() {
 		this._defaultSender = stream(getDefaultSenderFromUser(logins.getUserController()))
 		this._senderName = stream(logins.getUserController().userGroupInfo.name)
@@ -102,6 +104,16 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 		}, null)
 
 		this._outOfOfficeNotification.getAsync().then(() => this._updateOutOfOfficeNotification())
+
+		locator.loginFacade.isPersistentSession().then(isPersistentSession => {
+			if (isOfflineStorageAvailable() && isPersistentSession) {
+				locator.offlineDbFacade.getTimeRangeMs().then(timeRange => {
+					this.storedDataTimeRangeMs = timeRange
+					m.redraw()
+				})
+			}
+		})
+
 	}
 
 	view(): Children {
@@ -156,6 +168,26 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 			disabled: true,
 			injectionsRight: () => [m(ButtonN, editOutOfOfficeNotificationButtonAttrs)],
 		}
+
+		let timeRangeAttrs
+		if (this.storedDataTimeRangeMs != null) {
+			const editStoredDataTimeRangeButtonAttrs = {}
+			timeRangeAttrs = {
+				// TODO Translate
+				label: () => "Stored data time range",
+				value: `${this.storedDataTimeRangeMs / DAY_IN_MILLIS} days`,
+				disabled: true,
+				injectionsRight: () => [m(ButtonN, {
+					// TODO Translate
+					label: () => "Edit stored data time range",
+					click: async () => {
+						this.storedDataTimeRangeMs = await showEditStoredDataTimeRangeDialog(this.storedDataTimeRangeMs)
+					},
+					icon: () => Icons.Edit,
+				})],
+			} as const
+		}
+
 		const editOutOfOfficeNotificationButtonAttrs: ButtonAttrs = {
 			label: "outOfOfficeNotification_title",
 			click: () => {
@@ -293,6 +325,7 @@ export class MailSettingsViewer implements UpdatableSettingsViewer {
 					m(DropDownSelectorN, enableMailIndexingAttrs),
 					m(DropDownSelectorN, reportMovedMailsAttrs),
 					m(TextFieldN, outOfOfficeAttrs),
+					timeRangeAttrs ? m(TextFieldN, timeRangeAttrs) : null,
 					logins.getUserController().isGlobalAdmin() ? m(EditAliasesFormN, this._editAliasFormAttrs) : null,
 					logins.isEnabled(FeatureType.InternalCommunication)
 						? null
@@ -449,4 +482,36 @@ function makeReportMovedMailsDropdownAttrs(
 		},
 		dropdownWidth: 250,
 	}
+}
+
+async function showEditStoredDataTimeRangeDialog(currentTimeRangeMs: number): Promise<number> {
+
+	let timeRange = currentTimeRangeMs
+
+	const newTimeRangeDeferred = defer<number>()
+
+	Dialog.showActionDialog({
+		title: () => "FIXME",
+		child: () =>  m(TextFieldN, {
+			label: () => "FIXME",
+			type: TextFieldType.Number,
+			value: stream(`${timeRange}`),
+			oninput: newValue => timeRange = Number(newValue)
+		}),
+		okAction: async () => {
+			try {
+				if (currentTimeRangeMs !== timeRange) {
+					await locator.offlineDbFacade.setTimeRangeMs(timeRange)
+				}
+				newTimeRangeDeferred.resolve(timeRange)
+			} catch (e) {
+				newTimeRangeDeferred.reject(e)
+			}
+		},
+		cancelAction: () => {
+			newTimeRangeDeferred.resolve(currentTimeRangeMs)
+		}
+	})
+
+	return newTimeRangeDeferred.promise
 }

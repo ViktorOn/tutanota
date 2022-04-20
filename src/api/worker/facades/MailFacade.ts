@@ -107,6 +107,7 @@ import {CounterService} from "../../entities/monitor/Services"
 import {PublicKeyService} from "../../entities/sys/Services"
 import {IServiceExecutor} from "../../common/ServiceRequest"
 import {BlobReferenceTokenWrapper, createBlobReferenceTokenWrapper} from "../../entities/sys/BlobReferenceTokenWrapper"
+import {MailFolder} from "../../entities/tutanota/MailFolder"
 
 assertWorkerOrNode()
 type Attachments = ReadonlyArray<TutanotaFile | DataFile | FileReference>

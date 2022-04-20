@@ -478,7 +478,7 @@ export class LoginFacadeImpl implements LoginFacade {
 				await this.initializeCacheStorage({
 					persistent: true,
 					userId,
-					databaseKey
+					databaseKey,
 				})
 			} else {
 				await this.initializeCacheStorage({persistent: false})

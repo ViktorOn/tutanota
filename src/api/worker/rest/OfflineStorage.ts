@@ -1,14 +1,18 @@
 import {TokenOrNestedTokens} from "cborg/types/interface.js"
 import {ListElementEntity, SomeEntity} from "../../common/EntityTypes.js"
-import {firstBiggerThanSecond} from "../../common/utils/EntityUtils.js"
+import {firstBiggerThanSecond, getListId, timestampToGeneratedId} from "../../common/utils/EntityUtils.js"
 import {CacheStorage, expandId} from "./EntityRestCache.js"
 import * as cborg from "cborg"
 import {EncodeOptions, Token, Type} from "cborg"
-import {assert, TypeRef} from "@tutao/tutanota-utils"
+import {assert, DAY_IN_MILLIS, mapNullable, TypeRef} from "@tutao/tutanota-utils"
 import type {OfflineDbFacade} from "../../../desktop/db/OfflineDbFacade"
 import {isOfflineStorageAvailable, isTest} from "../../common/Env"
 import {ProgrammingError} from "../../common/error/ProgrammingError"
-import {SessionType} from "../../common/SessionType"
+import {MailTypeRef} from "../../entities/tutanota/Mail"
+import {MailBodyTypeRef} from "../../entities/tutanota/MailBody"
+import {FileTypeRef} from "../../entities/tutanota/File"
+import {MailFolderTypeRef} from "../../entities/tutanota/MailFolder"
+import {MailFolderType} from "../../common/TutanotaConstants"
 
 function dateEncoder(data: Date, typ: string, options: EncodeOptions): TokenOrNestedTokens | null {
 	return [
@@ -33,8 +37,16 @@ export const customTypeDecoders: Array<TypeDecoder> = (() => {
 	return tags
 })()
 
+const DEFAULT_TIME_RANGE = 31 * DAY_IN_MILLIS
+
 export class OfflineStorage implements CacheStorage {
 	private _userId: Id | null = null
+
+	private readonly timeLimitedTypes = [
+		MailTypeRef,
+		MailBodyTypeRef,
+		FileTypeRef
+	]
 
 	constructor(
 		private readonly offlineDbFacade: OfflineDbFacade,
@@ -135,8 +147,8 @@ export class OfflineStorage implements CacheStorage {
 		return this.getMetadata("lastUpdateTime")
 	}
 
-	async putLastUpdateTime(value: number): Promise<void> {
-		await this.putMetadata("lastUpdateTime", value)
+	async putLastUpdateTime(ms: number): Promise<void> {
+		await this.putMetadata("lastUpdateTime", ms)
 	}
 
 	private async putMetadata<K extends keyof OfflineDbMeta>(key: K, value: OfflineDbMeta[K]): Promise<void> {
@@ -151,8 +163,84 @@ export class OfflineStorage implements CacheStorage {
 	async purgeStorage(): Promise<void> {
 		await this.offlineDbFacade.deleteAll(this.userId)
 	}
+
+	async clearExcludedData(): Promise<void> {
+
+		const cutoffTimestamp = await this.getCutoffTimestamp()
+
+		const {trash, spam} = await this.getTrashAndSpamFolderIds()
+
+		if (trash) {
+			await this.offlineDbFacade.deleteList(this.userId, this.getTypeId(MailTypeRef), trash)
+		}
+
+		if (spam) {
+			await this.offlineDbFacade.deleteList(this.userId, this.getTypeId(MailTypeRef), spam)
+		}
+
+		const cutoffId = timestampToGeneratedId(cutoffTimestamp)
+
+		const limitedTypeIds = this.timeLimitedTypes.map(type => this.getTypeId(type))
+		for (let type of limitedTypeIds) {
+			// Delete all entities that were created before the cutoff
+			await this.offlineDbFacade.deleteEntitiesBeforeId(this.userId, type, cutoffId)
+		}
+
+		// Update any ranges that have now been reduced due to the deletion of list entities
+		// If the range was completely before the cutoff, then it gets deleted
+		// If only the lower part of the range was before the cutoff, it gets set to the cutoff id
+		// Otherwise it is left alone
+		const lists = await this.offlineDbFacade.getLists(this.userId)
+		for (let {type, listId} of lists) {
+
+			// unlimited types were not modified
+			if (!limitedTypeIds.includes(type)) {
+				continue
+			}
+
+			const range = await this.offlineDbFacade.getRange(this.userId, type, listId)
+			if (range == null) {
+				continue
+			}
+
+			if (firstBiggerThanSecond(cutoffId, range.lower)) {
+				if (firstBiggerThanSecond(cutoffId, range.upper)) {
+					await this.offlineDbFacade.deleteRange(this.userId, type, listId)
+				} else {
+					await this.offlineDbFacade.setLowerRange(this.userId, type, listId, cutoffId)
+				}
+			}
+		}
+	}
+
+	async getTimeRangeMs(): Promise<number> {
+		return await this.getMetadata("timeRangeMs") ?? DEFAULT_TIME_RANGE
+	}
+
+	async setTimeRangeMs(rangeMs: number): Promise<void> {
+		await this.putMetadata("timeRangeMs", rangeMs)
+	}
+
+	async getCutoffTimestamp(): Promise<number> {
+		return Date.now() + await this.getTimeRangeMs()
+	}
+
+	/**
+	 * It's annoying to get a list of mail folders at the time at which we initialise the offline storage
+	 * So for now we just read them from the offline DB itself so that we can delete any entities from either list.
+	 */
+	private async getTrashAndSpamFolderIds(): Promise<{trash: Id | null, spam: Id | null}> {
+		const folders = await this.offlineDbFacade.getAll(this.userId, this.getTypeId(MailFolderTypeRef))
+								  .then(entities => entities.map(entity => this.deserialize(MailFolderTypeRef, entity)))
+
+		const trash = mapNullable(folders.find(folder => folder.folderType === MailFolderType.TRASH), getListId) ?? null
+		const spam = mapNullable(folders.find(folder => folder.folderType === MailFolderType.SPAM), getListId) ?? null
+
+		return {trash, spam}
+	}
 }
 
-export type OfflineDbMeta = {
+export interface OfflineDbMeta {
 	lastUpdateTime: number
+	timeRangeMs: number
 }

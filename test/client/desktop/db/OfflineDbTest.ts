@@ -8,6 +8,8 @@ import {calendarGroupId} from "../../calendar/CalendarTestUtils"
 import * as fs from "fs"
 import * as cborg from "cborg"
 import {CryptoError} from "@tutao/tutanota-crypto"
+import {MailTypeRef} from "../../../../src/api/entities/tutanota/Mail"
+import {MailBodyTypeRef} from "../../../../src/api/entities/tutanota/MailBody"
 //some tests will not work wit in-memory database so we crate a file and delete it afterwards
 const database = "./testdatabase.sqlite"
 
@@ -107,6 +109,10 @@ o.spec("OfflineDb ", function () {
 			db.setNewRange(ContactTypeRef.type, listId, GENERATED_MIN_ID, "-----------------") // like maxId but longer than normal id, therefore bigger
 			const received = db.getIdsInRange(ContactTypeRef.type, listId)
 			o(received).deepEquals([id1, id2])
+		})
+
+		o("returns an empty array if no range exists", function() {
+			o(db.getIdsInRange(ContactTypeRef.type, listId)).deepEquals([])
 		})
 	})
 
@@ -274,7 +280,7 @@ o.spec("OfflineDb ", function () {
 			o(db.getMetadata("lastUpdateTime")).equals(null)("metadata was deleted")
 
 		})
-		o("delete all then write works", function() {
+		o("delete all then write works", function () {
 			const entity1 = createEntity(listId, id1)
 			const entity2 = createEntity(listId, id2)
 
@@ -297,6 +303,67 @@ o.spec("OfflineDb ", function () {
 			o(db.getLastBatchIdForGroup(calendarGroupId)).equals("batchId")
 			o(db.getIdsInRange(ContactTypeRef.type, listId)).deepEquals([id2])
 			o(cborg.decode(db.getMetadata("lastUpdateTime")!)).equals(123)
+		})
+		o("when a list is deleted, all entities and ranges are removed", function () {
+			const type = MailTypeRef.type
+			const listId = "listId"
+			for (let id of ["aaa", "bbb", "ccc"]) {
+				db.put({type, listId, elementId: id, entity: createEntity(listId, id)})
+			}
+			db.setNewRange(type, listId, "aaa", "ccc")
+
+			db.deleteList(type, listId)
+
+			o(db.getIdsInRange(type, listId)).deepEquals([])
+			o(db.get(type, listId, "aaa")).equals(null)
+			o(db.get(type, listId, "bbb")).equals(null)
+			o(db.get(type, listId, "ccc")).equals(null)
+			o(db.getRange(type, listId)).equals(null)
+			o(db.getLists()).deepEquals([])
+		})
+
+		o("delete range works", function() {
+			db.setNewRange(MailTypeRef.type, "listId", "aaa", "eee")
+			db.deleteRange(MailTypeRef.type, "listId")
+			o(db.getRange(MailTypeRef.type, "listId")).equals(null)
+		})
+
+		o.spec("delete old data", function () {
+			const listType = MailTypeRef.type
+			const elementType = MailBodyTypeRef.type
+			const listId = "listId"
+			const cutoff = "ddd"
+			o("all element entities and list entities older than cutoffId are deleted", function () {
+				const oldEntities = [
+					{type: listType, listId, elementId: "aaa"},
+					{type: listType, listId, elementId: "bbb"},
+					{type: listType, listId, elementId: "ccc"},
+					{type: elementType, listId: null, elementId: "aab"},
+					{type: elementType, listId: null, elementId: "aac"},
+					{type: elementType, listId: null, elementId: "ddc"},
+				]
+				const newEntities = [
+					{type: listType, listId, elementId: "ddd"},
+					{type: listType, listId, elementId: "eee"},
+					{type: listType, listId, elementId: "fff"},
+					{type: elementType, listId: null, elementId: "dde"},
+					{type: elementType, listId: null, elementId: "ggg"},
+					{type: elementType, listId: null, elementId: "xxx"},
+				]
+				for (let entity of oldEntities.concat(newEntities)) {
+					db.put(Object.assign({}, entity, { entity: createEntity(entity.listId, entity.elementId)}))
+				}
+
+				db.deleteEntitiesBeforeId([listType, elementType], cutoff)
+
+				for (let {type, listId, elementId} of oldEntities) {
+					o(db.get(type, listId, elementId)).equals(null)(`old ${type} ${listId} ${elementId}`)
+				}
+
+				for (let {type, listId, elementId} of newEntities) {
+					o(db.get(type, listId, elementId)).deepEquals(createEntity(listId, elementId))(`new ${type} ${listId} ${elementId}`)
+				}
+			})
 		})
 	})
 
@@ -323,7 +390,7 @@ o.spec("OfflineDb ", function () {
 			o(db.getLastBatchIdForGroup(groupId)).equals(newBatchId)
 		})
 	})
-	o.spec("metadata", function() {
+	o.spec("metadata", function () {
 		o("get a value that was written should  return the same value", function () {
 			const time = 123456789
 			db.putMetadata("lastUpdateTime", cborg.encode(time))
@@ -331,7 +398,7 @@ o.spec("OfflineDb ", function () {
 			o(cborg.decode(read!)).equals(time)
 		})
 
-		o("get a value that wasn't written should just return null", function() {
+		o("get a value that wasn't written should just return null", function () {
 			const read = db.getMetadata("lastUpdateTime")
 			o(read).equals(null)
 		})
@@ -404,8 +471,8 @@ o.spec("OfflineDb ", function () {
 	})
 })
 
-function createEntity(listId: string, elementId: string): Buffer {
-	return new Buffer(stringToUtf8Uint8Array(listId + elementId))
+function createEntity(listId: string | null, elementId: string): Buffer {
+	return new Buffer(stringToUtf8Uint8Array((listId ?? "") + elementId))
 }
 
 function createElementEntity(elementId: string): Buffer {
