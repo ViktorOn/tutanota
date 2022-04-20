@@ -44,7 +44,7 @@ import type {CreateSessionReturn} from "../../entities/sys/CreateSessionReturn"
 import {_TypeModel as SessionModelType, SessionTypeRef} from "../../entities/sys/Session"
 import {EntityRestClient, typeRefToPath} from "../rest/EntityRestClient"
 import {createSecondFactorAuthGetData} from "../../entities/sys/SecondFactorAuthGetData"
-import {ConnectionError, LockedError, NotAuthenticatedError, NotFoundError, ServiceUnavailableError} from "../../common/error/RestError"
+import {ConnectionError, LockedError, NotAuthenticatedError, NotFoundError, ServiceUnavailableError, SessionExpiredError} from "../../common/error/RestError"
 import type {WorkerImpl} from "../WorkerImpl"
 import type {Indexer} from "../search/Indexer"
 import {createDeleteCustomerData} from "../../entities/sys/DeleteCustomerData"
@@ -460,7 +460,11 @@ export class LoginFacadeImpl implements LoginFacade {
 			await this.finishResumeSession(credentials, null)
 		} catch (e) {
 			this.asyncLoginState = {state: "failed", credentials}
-			throw e
+			if (e instanceof NotAuthenticatedError || e instanceof SessionExpiredError) {
+				this.loginListener.onLoginError()
+			} else {
+				throw e
+			}
 		}
 	}
 

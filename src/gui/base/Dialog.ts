@@ -1,21 +1,14 @@
 import m, {Children, Component} from "mithril"
+import type Stream from "mithril/stream"
 import stream from "mithril/stream"
 import type {ModalComponent} from "./Modal"
 import {modal} from "./Modal"
-import {
-	alpha,
-	AlphaEnum, AnimationPromise,
-	animations,
-	DefaultAnimationTime,
-	opacity,
-	transform,
-	TransformEnum
-} from "../animation/Animations"
+import {alpha, AlphaEnum, AnimationPromise, animations, DefaultAnimationTime, opacity, transform, TransformEnum} from "../animation/Animations"
 import {ease} from "../animation/Easing"
 import type {TranslationKey, TranslationText} from "../../misc/LanguageViewModel"
 import {lang} from "../../misc/LanguageViewModel"
 import type {KeyPress, Shortcut} from "../../misc/KeyManager"
-import {focusNext, focusPrevious, keyManager} from "../../misc/KeyManager"
+import {focusNext, focusPrevious, isKeyPressed, keyManager} from "../../misc/KeyManager"
 import {getElevatedBackground} from "../theme"
 import {px, size} from "../size"
 import {HabReminderImage} from "./icons/Icons"
@@ -37,7 +30,6 @@ import {$Promisable, assertNotNull, getAsLazy, mapLazily, noOp} from "@tutao/tut
 import type {DialogInjectionRightAttrs} from "./DialogInjectionRight"
 import {DialogInjectionRight} from "./DialogInjectionRight"
 import {assertMainOrNode} from "../../api/common/Env"
-import type Stream from "mithril/stream"
 
 assertMainOrNode()
 export const INPUT = "input, textarea, div[contenteditable='true']"
@@ -872,25 +864,34 @@ export class Dialog implements ModalComponent {
 
 	/**
 	 * Requests a password from the user. Stays open until the caller sets the error message to "".
-	 * @param errorMessage a stream of error messages that will be shown as the password field help text. should not start with "", but with lang.get("emptyString_msg")
+	 * @param props.action will be executed as an attempt to apply new password. Error message is the return value.
 	 * @returns a stream of entered passwords
 	 */
 	static showRequestPasswordDialog(
-		errorMessage: Stream<string>,
-		props: {allowCancel: boolean} = {allowCancel: true},
-	): Stream<string> {
-		const out: Stream<string> = stream()
+		props: {
+			action: (pw: string) => Promise<string>
+			cancel: {
+				textId: TranslationKey,
+				action: () => void,
+			} | null
+		},
+	): Dialog {
 		const value: Stream<string> = stream("")
+		let errorMessage: string = ""
+
+		const doAction = async () => {
+			errorMessage = await props.action(value())
+		}
+
 		const textFieldAttrs: TextFieldAttrs = {
 			label: "password_label",
-			helpLabel: errorMessage,
+			helpLabel: () => errorMessage,
 			value: value,
 			preventAutofill: true,
 			type: TextFieldType.Password,
 			keyHandler: (key: KeyPress) => {
-				if (key.keyCode === 13) {
-					//return
-					out(value())
+				if (isKeyPressed(key.keyCode, Keys.RETURN)) {
+					doAction()
 					return false
 				}
 
@@ -903,12 +904,15 @@ export class Dialog implements ModalComponent {
 				view: () => m(TextFieldN, textFieldAttrs),
 			},
 			allowOkWithReturn: true,
-			okAction: () => out(value()),
-			allowCancel: props.allowCancel,
-			cancelAction: () => dialog.close(),
+			okAction: () => doAction(),
+			cancelActionTextId: props.cancel?.textId,
+			allowCancel: props.cancel != null,
+			cancelAction: () => {
+				props?.cancel?.action?.()
+				dialog.close()
+			},
 		})
-		errorMessage.map(v => (v ? m.redraw() : dialog.close()))
-		return out
+		return dialog
 	}
 
 	static _onKeyboardSizeChanged(newSize: number): void {
