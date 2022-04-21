@@ -882,7 +882,11 @@ export class Dialog implements ModalComponent {
 		let state: {type: "progress"} | {type: "idle", message: string} = {type: "idle", message: ""}
 
 		const doAction = async () => {
-			errorMessage = await props.action(value())
+			state = {type: "progress"}
+			m.redraw()
+			const errorMessage = await props.action(value())
+			state = {type: "idle", message: errorMessage}
+			m.redraw()
 		}
 
 		const child = {
@@ -916,9 +920,7 @@ export class Dialog implements ModalComponent {
 		}
 		const dialog = Dialog.showActionDialog({
 			title: lang.get("password_label"),
-			child: {
-				view: () => m(TextFieldN, textFieldAttrs),
-			},
+			child: child,
 			allowOkWithReturn: true,
 			okAction: () => doAction(),
 			cancelActionTextId: props.cancel?.textId,

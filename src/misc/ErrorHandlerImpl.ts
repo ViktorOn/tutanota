@@ -25,6 +25,8 @@ import {showMoreStorageNeededOrderDialog} from "./SubscriptionDialogs"
 import {showSnackBar} from "../gui/base/SnackBar"
 import {Credentials} from "./credentials/Credentials"
 import {promptForFeedbackAndSend, showErrorDialogNotLoggedIn} from "./ErrorReporter"
+import {CancelledError} from "../api/common/error/CancelledError"
+import {getLoginErrorMessage} from "./LoginUtils"
 
 assertMainOrNode()
 
@@ -156,14 +158,13 @@ export async function reloginForExpiredSession() {
 				try {
 					credentials = await logins.createSession(neverNull(logins.getUserController().userGroupInfo.mailAddress), pw, sessionType)
 				} catch (e) {
-					if (e in AccessBlockedError) {
-						return lang.get("loginFailedOften_msg")
-					} else if (e instanceof NotAuthenticatedError) {
-						return lang.get("loginFailed_msg")
-					} else if (e instanceof AccessDeactivatedError) {
-						return lang.get("loginFailed_msg")
-					} else if (e instanceof ConnectionError) {
-						return lang.get("serverNotReachable_msg")
+					if (e instanceof CancelledError ||
+						e instanceof AccessBlockedError ||
+						e instanceof NotAuthenticatedError ||
+						e instanceof AccessDeactivatedError ||
+						e instanceof ConnectionError
+					) {
+						return lang.getMaybeLazy(getLoginErrorMessage(e, false))
 					} else {
 						throw e
 					}
