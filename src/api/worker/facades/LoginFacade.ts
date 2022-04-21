@@ -433,8 +433,8 @@ export class LoginFacadeImpl implements LoginFacade {
 			}
 			this.userFacade.setUser(user)
 			this.loginListener.onPartialLoginSuccess()
-			// noinspection ES6MissingAwait: it's started async on purpose
-			this.asyncResumeSession(credentials)
+			// Start full login async
+			Promise.resolve().then(() => this.asyncResumeSession(credentials))
 			const data = {
 				user,
 				userGroupInfo: await this.entityClient.load(GroupInfoTypeRef, user.userGroup.groupInfo),
@@ -461,9 +461,9 @@ export class LoginFacadeImpl implements LoginFacade {
 		} catch (e) {
 			this.asyncLoginState = {state: "failed", credentials}
 			if (e instanceof NotAuthenticatedError || e instanceof SessionExpiredError) {
-				this.loginListener.onLoginError()
+				await this.loginListener.onLoginError()
 			} else {
-				throw e
+				await this.worker.sendError(e)
 			}
 		}
 	}
