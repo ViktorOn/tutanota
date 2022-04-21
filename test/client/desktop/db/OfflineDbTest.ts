@@ -354,7 +354,8 @@ o.spec("OfflineDb ", function () {
 					db.put(Object.assign({}, entity, { entity: createEntity(entity.listId, entity.elementId)}))
 				}
 
-				db.deleteEntitiesBeforeId([listType, elementType], cutoff)
+				db.deleteEntitiesBeforeId(listType, cutoff)
+				db.deleteEntitiesBeforeId(elementType, cutoff)
 
 				for (let {type, listId, elementId} of oldEntities) {
 					o(db.get(type, listId, elementId)).equals(null)(`old ${type} ${listId} ${elementId}`)

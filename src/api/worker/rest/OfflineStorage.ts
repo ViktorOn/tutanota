@@ -12,7 +12,8 @@ import {MailTypeRef} from "../../entities/tutanota/Mail"
 import {MailBodyTypeRef} from "../../entities/tutanota/MailBody"
 import {FileTypeRef} from "../../entities/tutanota/File"
 import {MailFolderTypeRef} from "../../entities/tutanota/MailFolder"
-import {MailFolderType} from "../../common/TutanotaConstants"
+import {MailFolderType, OFFLINE_STORAGE_DEFAULT_TIME_RANGE_DAYS} from "../../common/TutanotaConstants"
+import {DateProvider} from "../../common/DateProvider"
 
 function dateEncoder(data: Date, typ: string, options: EncodeOptions): TokenOrNestedTokens | null {
 	return [
@@ -37,8 +38,6 @@ export const customTypeDecoders: Array<TypeDecoder> = (() => {
 	return tags
 })()
 
-const DEFAULT_TIME_RANGE = 31 * DAY_IN_MILLIS
-
 export class OfflineStorage implements CacheStorage {
 	private _userId: Id | null = null
 
@@ -50,6 +49,7 @@ export class OfflineStorage implements CacheStorage {
 
 	constructor(
 		private readonly offlineDbFacade: OfflineDbFacade,
+		private readonly dateProvider: DateProvider,
 	) {
 		assert(isOfflineStorageAvailable() || isTest(), "Offline storage is not available.")
 	}
@@ -213,16 +213,16 @@ export class OfflineStorage implements CacheStorage {
 		}
 	}
 
-	async getTimeRangeMs(): Promise<number> {
-		return await this.getMetadata("timeRangeMs") ?? DEFAULT_TIME_RANGE
+	async getTimeRangeDays(): Promise<number> {
+		return await this.getMetadata("timeRangeDays") ?? OFFLINE_STORAGE_DEFAULT_TIME_RANGE_DAYS
 	}
 
-	async setTimeRangeMs(rangeMs: number): Promise<void> {
-		await this.putMetadata("timeRangeMs", rangeMs)
+	async setTimeRangeDays(days: number): Promise<void> {
+		await this.putMetadata("timeRangeDays", days)
 	}
 
 	async getCutoffTimestamp(): Promise<number> {
-		return Date.now() + await this.getTimeRangeMs()
+		return this.dateProvider.now() + (await this.getTimeRangeDays() * DAY_IN_MILLIS)
 	}
 
 	/**
@@ -230,17 +230,15 @@ export class OfflineStorage implements CacheStorage {
 	 * So for now we just read them from the offline DB itself so that we can delete any entities from either list.
 	 */
 	private async getTrashAndSpamFolderIds(): Promise<{trash: Id | null, spam: Id | null}> {
-		const folders = await this.offlineDbFacade.getAll(this.userId, this.getTypeId(MailFolderTypeRef))
-								  .then(entities => entities.map(entity => this.deserialize(MailFolderTypeRef, entity)))
-
+		const serializedFolders = await this.offlineDbFacade.getAll(this.userId, this.getTypeId(MailFolderTypeRef))
+		const folders = serializedFolders.map(entity => this.deserialize(MailFolderTypeRef, entity))
 		const trash = mapNullable(folders.find(folder => folder.folderType === MailFolderType.TRASH), getListId) ?? null
 		const spam = mapNullable(folders.find(folder => folder.folderType === MailFolderType.SPAM), getListId) ?? null
-
 		return {trash, spam}
 	}
 }
 
 export interface OfflineDbMeta {
 	lastUpdateTime: number
-	timeRangeMs: number
+	timeRangeDays: number
 }

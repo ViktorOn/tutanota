@@ -180,7 +180,7 @@ export class OfflineDb {
 		const listElements = this.db.prepare("SELECT entity from list_entities WHERE type = :type")
 								 .all({type}) ?? []
 
-		return elements.concat(listElements)
+		return elements.concat(listElements).map(element => element.entity)
 	}
 
 	delete(type: string, listId: string | null, elementId: string) {

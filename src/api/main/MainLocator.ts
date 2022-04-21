@@ -4,7 +4,7 @@ import {EventController} from "./EventController"
 import {EntropyCollector} from "./EntropyCollector"
 import {SearchModel} from "../../search/model/SearchModel"
 import {MailModel} from "../../mail/model/MailModel"
-import {assertMainOrNode, getWebRoot, isAdminClient, isBrowser, isDesktop} from "../common/Env"
+import {assertMainOrNode, assertOfflineStorageAvailable, getWebRoot, isAdminClient, isBrowser, isDesktop, isOfflineStorageAvailable} from "../common/Env"
 import {notifications} from "../../gui/Notifications"
 import {logins} from "./LoginController"
 import type {ContactModel} from "../../contacts/model/ContactModel"
@@ -56,6 +56,7 @@ import {deviceConfig} from "../../misc/DeviceConfig"
 import {IServiceExecutor} from "../common/ServiceRequest.js"
 import {BlobFacade} from "../worker/facades/BlobFacade"
 import {CryptoFacade} from "../worker/crypto/CryptoFacade"
+import {OfflineDbFacade} from "../../desktop/db/OfflineDbFacade"
 
 assertMainOrNode()
 
@@ -100,6 +101,7 @@ export interface IMainLocator {
 	readonly usageTestModel: UsageTestModel
 	readonly serviceExecutor: IServiceExecutor
 	readonly cryptoFacade: CryptoFacade
+	readonly offlineDbFacade: OfflineDbFacade
 
 	readonly init: () => Promise<void>
 	readonly initialized: Promise<void>
@@ -142,7 +144,12 @@ class MainLocator implements IMainLocator {
 	serviceExecutor!: IServiceExecutor
 	cryptoFacade!: CryptoFacade
 
+	/**
+	 * @deprecated
+	 */
 	private _nativeInterfaces: NativeInterfaces | null = null
+
+	private _exposedNativeInterfaces: ExposedNativeInterface | null = null
 
 	get native(): NativeInterfaceMain {
 		return this._getNativeInterface("native")
@@ -163,12 +170,25 @@ class MainLocator implements IMainLocator {
 	get webauthnController(): IWebauthn {
 		const creds = navigator.credentials
 		return isDesktop() || isAdminClient()
-			? this.exposeNativeInterface().webauthn
+			? this.getExposedNativeInterface().webauthn
 			: new BrowserWebauthn(creds, window.location.hostname)
 	}
 
-	exposeNativeInterface(): ExposedNativeInterface {
-		return exposeRemote<ExposedNativeInterface>((msg) => this.native.invokeNative(msg))
+	get offlineDbFacade(): OfflineDbFacade {
+		assertOfflineStorageAvailable()
+		return this.getExposedNativeInterface().offlineDbFacade
+	}
+
+	private getExposedNativeInterface(): ExposedNativeInterface {
+		if (isBrowser()) {
+			throw new ProgrammingError("Tried to access native interfaces in browser")
+		}
+
+		if (this._exposedNativeInterfaces == null) {
+			this._exposedNativeInterfaces = exposeRemote<ExposedNativeInterface>((msg) => this.native.invokeNative(msg))
+		}
+
+		return this._exposedNativeInterfaces
 	}
 
 	_getNativeInterface<T extends keyof NativeInterfaces>(name: T): NativeInterfaces[T] {
@@ -270,7 +290,7 @@ class MainLocator implements IMainLocator {
 				},
 			},
 			this.serviceExecutor,
-			)
+		)
 
 		const lazyScheduler = async () => {
 			const {AlarmSchedulerImpl} = await import("../../calendar/date/AlarmScheduler")

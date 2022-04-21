@@ -64,7 +64,6 @@ export class OfflineDbFacade {
 
 	async deleteAll(userId: Id): Promise<void> {
 		return this.getDbForUserId(userId).purge()
-
 	}
 
 	async getLastBatchIdForGroup(userId: Id, groupId: Id): Promise<string | null> {
@@ -113,3 +112,4 @@ export class OfflineDbFacade {
 		return db
 	}
 }
+

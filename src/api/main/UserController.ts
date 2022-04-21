@@ -37,9 +37,10 @@ export interface IUserController {
 	user: User
 	userGroupInfo: GroupInfo
 	props: TutanotaProperties
-	sessionId: IdTuple
-	accessToken: string
+	readonly sessionId: IdTuple
+	readonly accessToken: string
 	readonly userSettingsGroupRoot: UserSettingsGroupRoot
+	readonly userId: Id
 
 	isGlobalAdmin(): boolean
 
@@ -86,33 +87,21 @@ export interface IUserController {
 }
 
 export class UserController implements IUserController {
-	user: User
-	userGroupInfo: GroupInfo
-	props: TutanotaProperties
-	sessionId: IdTuple
-	accessToken: Base64Url
-	persistentSession: boolean
-	userSettingsGroupRoot: UserSettingsGroupRoot
-	entityClient: EntityClient
 
 	constructor(
-		user: User,
-		userGroupInfo: GroupInfo,
-		sessionId: IdTuple,
-		props: TutanotaProperties,
-		accessToken: Base64Url,
-		persistentSession: boolean,
-		userSettingsGroupRoot: UserSettingsGroupRoot,
-		entityClient: EntityClient,
+		public user: User,
+		public userGroupInfo: GroupInfo,
+		public readonly sessionId: IdTuple,
+		public props: TutanotaProperties,
+		public readonly accessToken: Base64Url,
+		public readonly persistentSession: boolean,
+		public userSettingsGroupRoot: UserSettingsGroupRoot,
+		private readonly entityClient: EntityClient,
 	) {
-		this.user = user
-		this.userGroupInfo = userGroupInfo
-		this.props = props
-		this.sessionId = sessionId
-		this.accessToken = accessToken
-		this.persistentSession = persistentSession
-		this.userSettingsGroupRoot = userSettingsGroupRoot
-		this.entityClient = entityClient
+	}
+
+	get userId(): Id {
+		return this.user._id
 	}
 
 	/**

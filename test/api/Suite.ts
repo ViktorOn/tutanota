@@ -40,6 +40,7 @@ import "./rest/OfflineStorageTest.js"
 import {preTest, reportTest} from "./TestUtils"
 import {random} from "@tutao/tutanota-crypto"
 import * as td from "testdouble"
+import {Mode} from "../../src/api/common/Env"
 
 (async function () {
 
@@ -70,6 +71,8 @@ import * as td from "testdouble"
 	})
 
 	o.afterEach(function () {
+		// Reset env.mode in case any tests have fiddled with it
+		env.mode = Mode.Test
 		td.reset()
 	})
 

@@ -8,7 +8,7 @@ import type {WorkerImpl} from "../WorkerImpl"
 import type {NativeInterface} from "../../../native/common/NativeInterface"
 import {assertWorkerOrNode} from "../../common/Env"
 import {CacheStorage} from "./EntityRestCache"
-import {TypeRef} from "@tutao/tutanota-utils"
+import {WorkerDateProvider} from "../utils/WorkerDateProvider"
 
 assertWorkerOrNode()
 
@@ -35,7 +35,7 @@ export class CacheStorageFactory {
 	async getStorage(args: GetStorageArgs): Promise<CacheStorage> {
 		if (args.persistent) {
 			const {offlineDbFacade} = exposeRemote((request) => this.native.invokeNative(request))
-			const offlineStorage = new OfflineStorage(offlineDbFacade)
+			const offlineStorage = new OfflineStorage(offlineDbFacade, new WorkerDateProvider())
 			await offlineStorage.init(args.userId, uint8ArrayToKey(args.databaseKey))
 
 			const lastUpdateTime = await offlineStorage.getLastUpdateTime()

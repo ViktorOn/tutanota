@@ -139,5 +139,11 @@ export function bootFinished() {
  * Whether or not we will be using an offline cache (doesn't take into account if credentials are stored)
  */
 export function isOfflineStorageAvailable(): boolean {
-	return false
+	return isDesktop()
+}
+
+export function assertOfflineStorageAvailable() {
+	if (!isOfflineStorageAvailable()) {
+		throw new Error("Offline storage is not available")
+	}
 }
