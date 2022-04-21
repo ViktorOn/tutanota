@@ -1,6 +1,6 @@
 import {TokenOrNestedTokens} from "cborg/types/interface.js"
 import {ListElementEntity, SomeEntity} from "../../common/EntityTypes.js"
-import {firstBiggerThanSecond, getListId, timestampToGeneratedId} from "../../common/utils/EntityUtils.js"
+import {firstBiggerThanSecond, getListId, timestampToGeneratedId, generatedIdToTimestamp} from "../../common/utils/EntityUtils.js"
 import {CacheStorage, expandId} from "./EntityRestCache.js"
 import * as cborg from "cborg"
 import {EncodeOptions, Token, Type} from "cborg"
@@ -14,7 +14,6 @@ import {FileTypeRef} from "../../entities/tutanota/File"
 import {MailFolderTypeRef} from "../../entities/tutanota/MailFolder"
 import {MailFolderType, OFFLINE_STORAGE_DEFAULT_TIME_RANGE_DAYS} from "../../common/TutanotaConstants"
 import {DateProvider} from "../../common/DateProvider"
-
 function dateEncoder(data: Date, typ: string, options: EncodeOptions): TokenOrNestedTokens | null {
 	return [
 		// https://datatracker.ietf.org/doc/rfc8943/
@@ -168,6 +167,7 @@ export class OfflineStorage implements CacheStorage {
 
 		const cutoffTimestamp = await this.getCutoffTimestamp()
 
+
 		const {trash, spam} = await this.getTrashAndSpamFolderIds()
 
 		if (trash) {
@@ -177,8 +177,10 @@ export class OfflineStorage implements CacheStorage {
 		if (spam) {
 			await this.offlineDbFacade.deleteList(this.userId, this.getTypeId(MailTypeRef), spam)
 		}
+		console.log("cutoff date:", new Date(cutoffTimestamp))
 
 		const cutoffId = timestampToGeneratedId(cutoffTimestamp)
+		console.log("cutoff date in reverse:", new Date(generatedIdToTimestamp(cutoffId)))
 
 		const limitedTypeIds = this.timeLimitedTypes.map(type => this.getTypeId(type))
 		for (let type of limitedTypeIds) {
@@ -222,7 +224,7 @@ export class OfflineStorage implements CacheStorage {
 	}
 
 	async getCutoffTimestamp(): Promise<number> {
-		return this.dateProvider.now() + (await this.getTimeRangeDays() * DAY_IN_MILLIS)
+		return this.dateProvider.now() - (await this.getTimeRangeDays() * DAY_IN_MILLIS)
 	}
 
 	/**
@@ -232,8 +234,8 @@ export class OfflineStorage implements CacheStorage {
 	private async getTrashAndSpamFolderIds(): Promise<{trash: Id | null, spam: Id | null}> {
 		const serializedFolders = await this.offlineDbFacade.getAll(this.userId, this.getTypeId(MailFolderTypeRef))
 		const folders = serializedFolders.map(entity => this.deserialize(MailFolderTypeRef, entity))
-		const trash = mapNullable(folders.find(folder => folder.folderType === MailFolderType.TRASH), getListId) ?? null
-		const spam = mapNullable(folders.find(folder => folder.folderType === MailFolderType.SPAM), getListId) ?? null
+		const trash = mapNullable(folders.find(folder => folder.folderType === MailFolderType.TRASH), folder => folder.mails) ?? null
+		const spam = mapNullable(folders.find(folder => folder.folderType === MailFolderType.SPAM),  folder => folder.mails) ?? null
 		return {trash, spam}
 	}
 }

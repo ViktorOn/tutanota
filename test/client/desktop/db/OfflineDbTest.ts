@@ -333,7 +333,7 @@ o.spec("OfflineDb ", function () {
 			const elementType = MailBodyTypeRef.type
 			const listId = "listId"
 			const cutoff = "ddd"
-			o("all element entities and list entities older than cutoffId are deleted", function () {
+			o("all entities older than cutoffId are deleted, entities as old as or newer than cutoff are kept", function () {
 				const oldEntities = [
 					{type: listType, listId, elementId: "aaa"},
 					{type: listType, listId, elementId: "bbb"},

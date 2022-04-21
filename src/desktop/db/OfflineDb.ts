@@ -65,8 +65,9 @@ export class OfflineDb {
 			this.db.pragma("cipher_memory_security = ON")
 		}
 		const bytes = bitArrayToUint8Array(databaseKey)
-		const b64 = `x'${uint8ArrayToBase64(bytes)};`
-		this.db.pragma(`KEY = "${b64}"`)
+		// const key = `x'${uint8ArrayToBase64(bytes)};`
+		const key = "password"
+		this.db.pragma(`KEY = "${key}"`)
 
 		if (integrityCheck) {
 			this.checkIntegrity()
