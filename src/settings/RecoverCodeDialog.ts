@@ -20,7 +20,7 @@ export function showRecoverCodeDialogAfterPasswordVerification(action: Action, s
 	const userManagementFacade = locator.userManagementFacade
 	const dialog = Dialog.showRequestPasswordDialog({
 		action: (pw) => {
-			return showProgressDialog("loading_msg", action === "get" ? userManagementFacade.getRecoverCode(pw) : userManagementFacade.createRecoveryCode(pw))
+			return (action === "get" ? userManagementFacade.getRecoverCode(pw) : userManagementFacade.createRecoveryCode(pw))
 				.then(recoverCode => {
 					dialog.close()
 					showRecoverCodeDialog(recoverCode, showMessage)

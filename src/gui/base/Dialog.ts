@@ -30,6 +30,8 @@ import {$Promisable, assertNotNull, getAsLazy, mapLazily, noOp} from "@tutao/tut
 import type {DialogInjectionRightAttrs} from "./DialogInjectionRight"
 import {DialogInjectionRight} from "./DialogInjectionRight"
 import {assertMainOrNode} from "../../api/common/Env"
+import {Icon} from "./Icon"
+import {BootIcons} from "./icons/BootIcons"
 
 assertMainOrNode()
 export const INPUT = "input, textarea, div[contenteditable='true']"
@@ -877,25 +879,39 @@ export class Dialog implements ModalComponent {
 		},
 	): Dialog {
 		const value: Stream<string> = stream("")
-		let errorMessage: string = ""
+		let state: {type: "progress"} | {type: "idle", message: string} = {type: "idle", message: ""}
 
 		const doAction = async () => {
 			errorMessage = await props.action(value())
 		}
 
-		const textFieldAttrs: TextFieldAttrs = {
-			label: "password_label",
-			helpLabel: () => errorMessage,
-			value: value,
-			preventAutofill: true,
-			type: TextFieldType.Password,
-			keyHandler: (key: KeyPress) => {
-				if (isKeyPressed(key.keyCode, Keys.RETURN)) {
-					doAction()
-					return false
-				}
+		const child = {
+			view: () => {
+				const savedState = state
+				return (savedState.type == "idle")
+					? m(TextFieldN, {
+						label: "password_label",
+						helpLabel: () => savedState.message,
+						value: value,
+						preventAutofill: true,
+						type: TextFieldType.Password,
+						keyHandler: (key: KeyPress) => {
+							if (isKeyPressed(key.keyCode, Keys.RETURN)) {
+								doAction()
+								return false
+							}
 
-				return true
+							return true
+						},
+					})
+					: m(Icon, {
+						icon: BootIcons.Progress,
+						class: "icon-xl icon-progress block mt mb",
+						style: {
+							marginLeft: 'auto',
+							marginRight: 'auto',
+						}
+					})
 			},
 		}
 		const dialog = Dialog.showActionDialog({
