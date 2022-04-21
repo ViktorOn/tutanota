@@ -163,11 +163,16 @@ export async function reloginForExpiredSession() {
 						return lang.get("loginFailedOften_msg")
 					} else if (e instanceof NotAuthenticatedError) {
 						return lang.get("loginFailed_msg")
-					} else if (e in AccessDeactivatedError) {
+					} else if (e instanceof AccessDeactivatedError) {
 						return lang.get("loginFailed_msg")
+					} else if (e instanceof ConnectionError) {
+						return lang.get("serverNotReachable_msg")
 					} else {
 						throw e
 					}
+				} finally {
+					// Once login succeeds we need to manually close the dialog
+					locator.secondFactorHandler.closeWaitingForSecondFactorDialog()
 				}
 				// Fetch old credentials to preserve database key if it's there
 				const oldCredentials = await locator.credentialsProvider.getCredentialsByUserId(userId)
@@ -176,14 +181,6 @@ export async function reloginForExpiredSession() {
 				loginDialogActive = false
 				dialog.close()
 				return ""
-				// TODO
-				// .catch(ofClass(ConnectionError, e => {
-				// 		errorMessage(lang.get("emptyString_msg"))
-				// 		throw e
-				// 	}),
-				// )
-				// TODO
-				// .finally(() => locator.secondFactorHandler.closeWaitingForSecondFactorDialog())
 			},
 			cancel: {
 				textId: "logout_label",
