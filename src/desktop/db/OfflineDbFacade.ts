@@ -50,7 +50,7 @@ export class OfflineDbFacade {
 
 	async deleteDatabaseForUser(userId: Id): Promise<void> {
 		const entry = this.cache.get(userId)
-		if (entry != null && entry.counter != 1) {
+		if (entry != null) {
 			if (entry.counter != 1) {
 				throw new Error(`Trying to delete database that is opened ${entry.counter} times`)
 			}
